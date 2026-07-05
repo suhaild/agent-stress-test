@@ -228,7 +228,7 @@ def test_end_to_end_run_completes_and_populates_the_tree(sample_agent_spec_path)
 
     assert result.run.status == "completed"
     assert result.run.started_at is not None and result.run.completed_at is not None
-    assert result.run.final_score is None  # reliability score is Phase 7
+    assert 0.0 <= result.run.final_score <= 1.0  # reliability score, populated in Phase 7
 
     assert len(result.tree.roots()) == 1
     root = result.tree.roots()[0]
