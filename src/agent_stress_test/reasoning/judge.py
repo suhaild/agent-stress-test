@@ -1,0 +1,1 @@
+"""Two-tier failure judge."""
