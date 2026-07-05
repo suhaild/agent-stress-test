@@ -14,6 +14,7 @@ dependencies = [
     "textual",
     "pyyaml",
     "python-dotenv",
+    "httpx",
 ]
 
 [project.optional-dependencies]

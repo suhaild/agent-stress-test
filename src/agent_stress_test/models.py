@@ -16,6 +16,31 @@ class Message(BaseModel):
     content: str
 
 
+class Step(BaseModel):
+    """One reasoning step exposed by a ReAct-style agent.
+
+    All fields are optional and extra fields are allowed: different agents
+    expose different step shapes, so this stays loosely typed by design
+    (the one exception to this file's usual `extra="forbid"` convention).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    thought: str | None = None
+    action: str | None = None
+    action_input: str | None = None
+    observation: str | None = None
+
+
+class AgentResponse(BaseModel):
+    """A target agent's reply, plus its reasoning trace if it exposed one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    final_reply: str
+    trace: list[Step] | None = None
+
+
 class ToolSpec(BaseModel):
     """A tool a target agent has available, as declared by its AgentSpec."""
 

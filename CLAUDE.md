@@ -78,6 +78,15 @@ Name components by their pattern so the codebase stays legible. These describe w
 - No MCTS library — if MCTS is built (stretch), write it directly behind the existing search interface.
 - Do not add a dependency without a clear reason; keep the dependency list lean.
 
+**Agent Skills — use actively, not just as reference:**
+If the following Agent Skills are installed, invoke them at the relevant point in the build rather than treating them as background reading:
+- **Hexagonal / clean-architecture skill** — use from Phase 0 onward, on every phase, to keep layering discipline (ports model capabilities not technologies; adapters only translate, never orchestrate business logic; dependencies point inward).
+- For `providers/litellm_provider.py` (Phase 1), reference litellm's official docs (docs.litellm.ai) directly rather than a third-party skill.
+- **LLM-evaluation skill** — use when building the failure judge, both tiers (Phases 3 and 8).
+- **frontend-design skill** — use when building the dashboard (Phase 10).
+- **pytest / Python-testing skill** — use throughout, for every phase's test suite.
+If a relevant skill is not installed, proceed using the rules in this file and say so, rather than skipping silently.
+
 ---
 
 ## Testing Policy

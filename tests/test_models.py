@@ -2,11 +2,13 @@ import pytest
 from pydantic import ValidationError
 
 from agent_stress_test.models import (
+    AgentResponse,
     AgentSpec,
     Cluster,
     Message,
     Node,
     Run,
+    Step,
     ToolSpec,
     Verdict,
 )
@@ -115,3 +117,31 @@ def test_cluster_valid():
     cluster = Cluster(run_id="run-1", label="topic-switch failures")
     assert cluster.member_node_ids == []
     assert cluster.representative_node_id is None
+
+
+def test_agent_response_without_trace():
+    response = AgentResponse(final_reply="hello")
+    assert response.final_reply == "hello"
+    assert response.trace is None
+
+
+def test_agent_response_with_trace():
+    steps = [
+        Step(thought="I should look this up.", action="lookup_order", observation="found it"),
+        Step(thought="I have enough to answer."),
+    ]
+    response = AgentResponse(final_reply="Your order shipped.", trace=steps)
+    assert response.trace == steps
+    assert response.trace[0].action == "lookup_order"
+    assert response.trace[1].action is None
+
+
+def test_step_allows_extra_fields():
+    step = Step(thought="hmm", tool_call_id="abc-123")
+    assert step.thought == "hmm"
+    assert step.model_dump()["tool_call_id"] == "abc-123"
+
+
+def test_agent_response_rejects_extra_field():
+    with pytest.raises(ValidationError):
+        AgentResponse(final_reply="hi", unexpected_field="surprise")

@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from agent_stress_test.models import Cluster, Message, Node, Run, Verdict
+from agent_stress_test.models import AgentResponse, Cluster, Message, Node, Run, Verdict
 
 
 class LLMProvider(ABC):
@@ -19,7 +19,7 @@ class TargetAgent(ABC):
     """The agent under test."""
 
     @abstractmethod
-    def respond(self, conversation: list[Message]) -> str: ...
+    def respond(self, conversation: list[Message]) -> AgentResponse: ...
 
 
 class Store(ABC):
