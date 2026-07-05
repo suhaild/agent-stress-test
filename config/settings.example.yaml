@@ -1,2 +1,5 @@
-# Example settings: provider key refs, run budgets.
-# Populated in Phase 1 (config.py) — placeholder only, no schema yet.
+# Copy to settings.yaml and adjust. API keys are never set here — they come
+# from the environment via a local .env file (see docs/GETTING_STARTED.md).
+default_model: claude-3-5-sonnet-20241022 # litellm model string
+max_steps: 20 # search budget per run (consumed from Phase 6 on)
+max_samples: 5 # default N for self-consistency sampling (Phase 5)
