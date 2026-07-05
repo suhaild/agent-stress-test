@@ -7,6 +7,7 @@ from agent_stress_test.models import (
     Cluster,
     Message,
     Node,
+    Rule,
     Run,
     Step,
     ToolSpec,
@@ -19,7 +20,7 @@ def make_agent_spec(**overrides) -> AgentSpec:
         "name": "test_agent",
         "system_prompt": "You are a helpful assistant.",
         "tools": [ToolSpec(name="lookup", description="Looks things up.")],
-        "rules": ["Never lie."],
+        "rules": [Rule(id="no-lie", text="Never lie.", severity="major")],
     }
     data.update(overrides)
     return AgentSpec(**data)
@@ -40,12 +41,23 @@ def test_agent_spec_valid():
     spec = make_agent_spec()
     assert spec.name == "test_agent"
     assert len(spec.tools) == 1
-    assert spec.rules == ["Never lie."]
+    assert spec.rules[0].text == "Never lie."
+    assert spec.rules[0].severity == "major"
+
+
+def test_rule_defaults_severity_to_major():
+    rule = Rule(id="r1", text="Be nice.")
+    assert rule.severity == "major"
+
+
+def test_rule_rejects_bad_severity():
+    with pytest.raises(ValidationError):
+        Rule(id="r1", text="Be nice.", severity="catastrophic")
 
 
 def test_agent_spec_missing_system_prompt():
     with pytest.raises(ValidationError):
-        AgentSpec(name="x", system_prompt="", tools=[], rules=["a rule"])
+        AgentSpec(name="x", system_prompt="", tools=[], rules=[Rule(id="r", text="a rule")])
 
 
 def test_agent_spec_empty_rules():
@@ -59,7 +71,7 @@ def test_agent_spec_rejects_extra_field():
             name="x",
             system_prompt="hi",
             tools=[],
-            rules=["a rule"],
+            rules=[Rule(id="r", text="a rule")],
             unexpected_field="surprise",
         )
 
@@ -98,8 +110,12 @@ def test_verdict_valid():
         rule_id="no-refunds",
         reason="Agent promised a refund directly.",
         tier="rules",
+        confidence=1.0,
+        severity="critical",
     )
     assert verdict.tier == "rules"
+    assert verdict.confidence == 1.0
+    assert verdict.severity == "critical"
 
 
 def test_verdict_rejects_bad_tier():
@@ -110,6 +126,34 @@ def test_verdict_rejects_bad_tier():
             passed=True,
             reason="fine",
             tier="tier-3-llm-council",
+            confidence=1.0,
+            severity="minor",
+        )
+
+
+def test_verdict_rejects_confidence_out_of_range():
+    with pytest.raises(ValidationError):
+        Verdict(
+            run_id="run-1",
+            node_id="node-1",
+            passed=True,
+            reason="fine",
+            tier="rules",
+            confidence=1.5,
+            severity="minor",
+        )
+
+
+def test_verdict_rejects_bad_severity():
+    with pytest.raises(ValidationError):
+        Verdict(
+            run_id="run-1",
+            node_id="node-1",
+            passed=True,
+            reason="fine",
+            tier="rules",
+            confidence=1.0,
+            severity="apocalyptic",
         )
 
 

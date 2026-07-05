@@ -19,7 +19,7 @@ def _render_system_prompt(spec: AgentSpec) -> str:
         tool_lines = "\n".join(f"- {tool.name}: {tool.description}" for tool in spec.tools)
         sections.append(f"Available tools:\n{tool_lines}")
 
-    rule_lines = "\n".join(f"- {rule}" for rule in spec.rules)
+    rule_lines = "\n".join(f"- {rule.text}" for rule in spec.rules)
     sections.append(f"Rules:\n{rule_lines}")
 
     sections.append(

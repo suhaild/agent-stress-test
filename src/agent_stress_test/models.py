@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+Severity = Literal["minor", "major", "critical"]
+
 
 class Message(BaseModel):
     """One turn in a conversation, in the shape every port passes around."""
@@ -50,6 +52,22 @@ class ToolSpec(BaseModel):
     description: str
 
 
+class Rule(BaseModel):
+    """A single behavioral rule the agent under test must obey.
+
+    Carries a stable `id` (referenced by the judge and by verdicts), the
+    human-readable `text` (shown to the agent and to the tier-2 LLM judge),
+    and a declared `severity`. Severity is configuration, not hardcoded in
+    the judge — changing it here changes the severity carried by verdicts.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    text: str = Field(min_length=1)
+    severity: Severity = "major"
+
+
 class AgentSpec(BaseModel):
     """The declarative definition of the agent under test."""
 
@@ -58,7 +76,7 @@ class AgentSpec(BaseModel):
     name: str
     system_prompt: str = Field(min_length=1)
     tools: list[ToolSpec] = Field(default_factory=list)
-    rules: list[str] = Field(min_length=1)
+    rules: list[Rule] = Field(min_length=1)
 
 
 class Run(BaseModel):
@@ -103,6 +121,8 @@ class Verdict(BaseModel):
     rule_id: str | None = None
     reason: str
     tier: Literal["rules", "llm"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    severity: Severity
 
 
 class Cluster(BaseModel):

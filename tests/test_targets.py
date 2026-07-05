@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from agent_stress_test.models import AgentResponse, AgentSpec, Message, Step, ToolSpec
+from agent_stress_test.models import AgentResponse, AgentSpec, Message, Rule, Step, ToolSpec
 from agent_stress_test.ports import TargetAgent
 from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.targets.http_agent import HttpAgent
@@ -20,7 +20,10 @@ def make_agent_spec(**overrides) -> AgentSpec:
             ToolSpec(name="lookup_order", description="Look up an order by ID."),
             ToolSpec(name="initiate_return", description="Start a return."),
         ],
-        rules=["Never invent data.", "Always be polite."],
+        rules=[
+            Rule(id="no-invent", text="Never invent data.", severity="major"),
+            Rule(id="be-polite", text="Always be polite.", severity="minor"),
+        ],
     )
     defaults.update(overrides)
     return AgentSpec(**defaults)
@@ -42,7 +45,7 @@ def test_render_system_prompt_includes_system_prompt_tools_and_rules():
         assert tool.name in prompt
         assert tool.description in prompt
     for rule in spec.rules:
-        assert rule in prompt
+        assert rule.text in prompt
 
 
 def test_render_system_prompt_omits_tools_section_when_no_tools():

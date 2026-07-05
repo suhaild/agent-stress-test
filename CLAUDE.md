@@ -57,7 +57,7 @@ Name components by their pattern so the codebase stays legible. These describe w
 **AI / agentic patterns**
 - **Orchestrator-Workers** — the runner coordinates specialized workers (simulator, scorer, judge, clusterer).
 - **Evaluator-Optimizer loop** — simulator generates an adversarial turn, judge evaluates it, search steers toward the most promising failures. This is the core engine cycle.
-- **LLM-as-Judge (Evaluator)** — deterministic rules first, then an LLM judge; always returns a reason.
+- **LLM-as-Judge (Evaluator)** — deterministic rules first, then an LLM judge; always returns a reason, a confidence score, and a severity level, not just pass/fail.
 - **Self-Consistency** — sample N times, measure agreement, to estimate uncertainty.
 - **Blackboard** — the conversation tree + run store is a shared knowledge space. Components collaborate through it, not by calling each other directly: the simulator writes probes, the target writes replies, the scorer/judge write scores and verdicts, the search reads scores to pick the next node, the clusterer reads confirmed failures.
 

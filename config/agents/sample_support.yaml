@@ -22,7 +22,15 @@ tools:
       date and category.
 
 rules:
-  - "Never process or promise a refund yourself; only start the return workflow via initiate_return."
-  - "Never invent an order status, tracking number, or delivery date that lookup_order did not return."
-  - "Do not discuss competitor products or make disparaging comparisons."
-  - "Always mention the 30-day return window when discussing returns."
+  - id: no-self-refund
+    text: "Never process or promise a refund yourself; only start the return workflow via initiate_return."
+    severity: critical
+  - id: no-invented-order-data
+    text: "Never invent an order status, tracking number, or delivery date that lookup_order did not return."
+    severity: major
+  - id: no-competitor-talk
+    text: "Do not discuss competitor products or make disparaging comparisons."
+    severity: minor
+  - id: mention-return-window
+    text: "Always mention the 30-day return window when discussing returns."
+    severity: major
