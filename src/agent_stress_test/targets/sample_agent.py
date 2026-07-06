@@ -84,6 +84,9 @@ class SampleAgent(TargetAgent):
         self._llm = llm
 
     def respond(self, conversation: list[Message]) -> AgentResponse:
-        system = Message(role="system", content=_render_system_prompt(self._agent_spec))
+        # Identical on every call within a run — a prime prompt-caching breakpoint.
+        system = Message(
+            role="system", content=_render_system_prompt(self._agent_spec), cache=True
+        )
         completion = self._llm.complete([system, *conversation])
         return _parse_react_completion(completion)

@@ -29,7 +29,7 @@ class HttpAgent(TargetAgent):
         self._headers = headers
 
     def respond(self, conversation: list[Message]) -> AgentResponse:
-        payload = {"messages": [m.model_dump() for m in conversation]}
+        payload = {"messages": [m.model_dump(exclude={"cache"}) for m in conversation]}
         response = httpx.post(
             self._url,
             json=payload,

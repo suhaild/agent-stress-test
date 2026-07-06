@@ -27,7 +27,9 @@ def _adversarial_prompt(
     (and, under the deterministic fake provider, is echoed back for testing).
     """
     directive = Message(role="user", content=f"{marker} {instruction}")
-    return [Message(role="system", content=_SIMULATOR_SYSTEM), *conversation, directive]
+    # Constant across every simulate() call — a prime prompt-caching breakpoint.
+    system = Message(role="system", content=_SIMULATOR_SYSTEM, cache=True)
+    return [system, *conversation, directive]
 
 
 class Tactic(ABC):

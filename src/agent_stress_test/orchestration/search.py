@@ -144,6 +144,10 @@ class GreedyBestFirstSearch(SearchStrategy):
     ) -> list[Node]:
         """Generate one adversarial child per tactic and evaluate each."""
         base = [*node.messages, Message(role="assistant", content=node.target_reply)]
+        # `base` is identical across every tactic branch below (and across each
+        # branch's self-consistency samples) — mark its end as a cache
+        # breakpoint so only the first call pays full price for this prefix.
+        base[-1] = base[-1].model_copy(update={"cache": True})
         children: list[Node] = []
         for tactic in self._tactics:
             probe = self._simulator.simulate(base, tactic)

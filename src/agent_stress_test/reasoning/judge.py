@@ -377,7 +377,8 @@ class LLMJudge(Judge):
             "Assess every rule and return the JSON object."
         )
         return [
-            Message(role="system", content=_LLM_JUDGE_SYSTEM),
+            # Constant across every judge call — a prime prompt-caching breakpoint.
+            Message(role="system", content=_LLM_JUDGE_SYSTEM, cache=True),
             Message(role="user", content=user),
         ]
 

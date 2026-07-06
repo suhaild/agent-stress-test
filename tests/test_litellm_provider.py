@@ -59,3 +59,25 @@ def test_sample_n_rejects_non_positive_n(mock_completion):
     provider = LiteLLMProvider(model="gpt-4o")
     with pytest.raises(ValueError):
         provider.sample_n([Message(role="user", content="hi")], 0)
+
+
+def test_cache_flagged_message_gets_cache_control(mock_completion):
+    provider = LiteLLMProvider(model="claude-3-5-sonnet-20241022")
+    messages = [
+        Message(role="system", content="be nice", cache=True),
+        Message(role="user", content="hello"),
+    ]
+
+    provider.complete(messages)
+
+    mock_completion.assert_called_once_with(
+        model="claude-3-5-sonnet-20241022",
+        messages=[
+            {
+                "role": "system",
+                "content": "be nice",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"role": "user", "content": "hello"},
+        ],
+    )

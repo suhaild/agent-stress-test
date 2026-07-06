@@ -160,6 +160,31 @@ def test_search_finds_planted_failure(sample_agent_spec_path):
     assert "[urgency-pressure]" in user_text
 
 
+def test_expand_marks_shared_prefix_as_cache_breakpoint(sample_agent_spec_path):
+    """Sibling tactic branches (and their target calls) share an identical
+    prefix before diverging on the tactic-specific probe; that shared prefix
+    should be flagged for prompt caching so only the first branch pays full
+    price for it.
+    """
+    captured: list[list[Message]] = []
+
+    def recording_target(conversation: list[Message]) -> str:
+        captured.append(list(conversation))
+        return "Happy to help. Let me know what you need."
+
+    strategy = make_strategy(sample_agent_spec_path, PythonFunctionAgent(recording_target))
+    tree = ConversationTree("run-cache")
+
+    strategy.search(tree, seed(), budget=1)
+
+    # First call is the root; the rest are one per tactic on its expansion.
+    tactic_calls = captured[1:]
+    assert len(tactic_calls) == TACTIC_COUNT
+    shared_prefixes = [conversation[-2] for conversation in tactic_calls]
+    assert all(message.cache for message in shared_prefixes)
+    assert len({message.content for message in shared_prefixes}) == 1
+
+
 def test_search_prefers_the_more_promising_branch(sample_agent_spec_path):
     # With the planted target, the minor-failure branch (proximity > 0) must be
     # expanded before the zero-signal siblings, which is what leads greedy to

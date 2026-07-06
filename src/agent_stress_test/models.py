@@ -16,6 +16,10 @@ class Message(BaseModel):
 
     role: Literal["system", "user", "assistant"]
     content: str
+    # Provider-agnostic hint: this message ends a cacheable prompt prefix.
+    # Adapters that support prompt caching (e.g. litellm_provider) may act on
+    # it; others (e.g. the fake provider) ignore it.
+    cache: bool = False
 
 
 class Step(BaseModel):
