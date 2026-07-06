@@ -1,4 +1,5 @@
 import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -57,9 +58,11 @@ class CountingTarget(TargetAgent):
     def __init__(self, inner: TargetAgent) -> None:
         self._inner = inner
         self.calls = 0
+        self._lock = threading.Lock()
 
     def respond(self, conversation: list[Message]) -> AgentResponse:
-        self.calls += 1
+        with self._lock:
+            self.calls += 1
         return self._inner.respond(conversation)
 
 

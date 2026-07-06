@@ -14,6 +14,7 @@ expanded first, because that is where more failures tend to live.
 import heapq
 import itertools
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from agent_stress_test.models import Message, Node, Severity, Verdict
@@ -105,6 +106,7 @@ class GreedyBestFirstSearch(SearchStrategy):
         *,
         tactics: list[str] | None = None,
         sample_n: int = 3,
+        max_concurrency: int = 5,
     ) -> None:
         self._simulator = simulator
         self._target = target
@@ -112,6 +114,7 @@ class GreedyBestFirstSearch(SearchStrategy):
         self._scorer = scorer
         self._tactics = tactics if tactics is not None else default_registry().names()
         self._sample_n = sample_n
+        self._max_concurrency = max_concurrency
 
     def search(
         self, tree: ConversationTree, seed_messages: list[Message], *, budget: int
@@ -120,9 +123,10 @@ class GreedyBestFirstSearch(SearchStrategy):
         failures: list[Verdict] = []
         nodes_created = 0
 
-        root = self._evaluate(
-            tree, seed_messages, parent_id=None, tactic=None, failures=failures
+        root_node, root_verdicts = self._compute(
+            tree.run_id, seed_messages, parent_id=None, tactic=None
         )
+        root = self._commit(tree, root_node, root_verdicts, failures=failures)
         nodes_created += 1
         frontier.push(root.id, node_priority(root, tree.verdicts(root.id)))
 
@@ -142,38 +146,58 @@ class GreedyBestFirstSearch(SearchStrategy):
     def _expand(
         self, tree: ConversationTree, node: Node, *, failures: list[Verdict]
     ) -> list[Node]:
-        """Generate one adversarial child per tactic and evaluate each."""
-        base = [*node.messages, Message(role="assistant", content=node.target_reply)]
-        # `base` is identical across every tactic branch below (and across each
-        # branch's self-consistency samples) — mark its end as a cache
-        # breakpoint so only the first call pays full price for this prefix.
-        base[-1] = base[-1].model_copy(update={"cache": True})
-        children: list[Node] = []
-        for tactic in self._tactics:
-            probe = self._simulator.simulate(base, tactic)
-            child = self._evaluate(
-                tree, [*base, probe], parent_id=node.id, tactic=tactic, failures=failures
-            )
-            children.append(child)
-        return children
+        """Generate one adversarial child per tactic and evaluate each.
 
-    def _evaluate(
+        The tactic branches are independent network calls (simulate + target +
+        optional scorer), so they run concurrently, bounded to
+        ``max_concurrency`` in flight at once. Only the compute step runs off
+        the main thread; committing results to the shared tree happens back
+        on the main thread afterward, so the tree is never mutated from more
+        than one thread at a time.
+        """
+        # Clear any cache breakpoint inherited from an ancestor turn before
+        # adding a new one — otherwise breakpoints accumulate one per tree
+        # level and blow past Anthropic's max of 4 per request as the search
+        # goes deeper. The cache lookback matches prior cached spans by content
+        # regardless of whether they're still explicitly marked, so only the
+        # newest breakpoint needs to be live.
+        base = [
+            *(m.model_copy(update={"cache": False}) if m.cache else m for m in node.messages),
+            Message(role="assistant", content=node.target_reply, cache=True),
+        ]
+        # `base` is identical across every tactic branch below (and across each
+        # branch's self-consistency samples) — the trailing cache=True is the
+        # shared-prefix breakpoint so only the first call pays full price for it.
+
+        def compute_for(tactic: str) -> tuple[Node, list[Verdict]]:
+            probe = self._simulator.simulate(base, tactic)
+            return self._compute(tree.run_id, [*base, probe], parent_id=node.id, tactic=tactic)
+
+        workers = min(self._max_concurrency, len(self._tactics))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            computed = list(executor.map(compute_for, self._tactics))
+
+        return [
+            self._commit(tree, child_node, verdicts, failures=failures)
+            for child_node, verdicts in computed
+        ]
+
+    def _compute(
         self,
-        tree: ConversationTree,
+        run_id: str,
         messages: list[Message],
         *,
         parent_id: str | None,
         tactic: str | None,
-        failures: list[Verdict],
-    ) -> Node:
-        """Target replies, judge evaluates, scorer scores — one loop iteration.
+    ) -> tuple[Node, list[Verdict]]:
+        """Target replies, judge evaluates, scorer scores — no shared state touched.
 
-        This is the single point where the four workers meet, writing their
-        results onto the shared tree.
+        Safe to call concurrently: builds a Node and its Verdicts purely from
+        its arguments, without reading or writing the tree.
         """
         response = self._target.respond(messages)
         node = Node(
-            run_id=tree.run_id,
+            run_id=run_id,
             parent_id=parent_id,
             messages=messages,
             target_reply=response.final_reply,
@@ -184,8 +208,19 @@ class GreedyBestFirstSearch(SearchStrategy):
         else:
             node.instability_score = 0.0
 
+        verdicts = self._judge.judge(response, run_id=run_id, node_id=node.id)
+        return node, verdicts
+
+    def _commit(
+        self,
+        tree: ConversationTree,
+        node: Node,
+        verdicts: list[Verdict],
+        *,
+        failures: list[Verdict],
+    ) -> Node:
+        """Write a computed node and its verdicts onto the shared tree (Blackboard)."""
         tree.add(node)
-        verdicts = self._judge.judge(response, run_id=tree.run_id, node_id=node.id)
         tree.attach_verdicts(node.id, verdicts)
         failures.extend(v for v in verdicts if not v.passed)
         return node

@@ -314,7 +314,19 @@ def build_checks(spec: AgentSpec) -> list[RuleCheck]:
             RequiredDisclaimerCheck(
                 rule_id=rule.id,
                 severity=rule.severity,
-                trigger_pattern=r"\breturn|\brefund",
+                # Bare "return"/"refund" also matches generic capability offers
+                # ("...checking status, delivery date, or starting a return?"),
+                # which aren't actually discussing a return. Require the mention
+                # to be tied to a concrete item ("return it"/"that"/"this"),
+                # eligibility, or an explicit window/policy/period claim instead.
+                trigger_pattern=(
+                    r"\b(?:it|that|this)\b.{0,20}\b(?:return|refund)\w*"
+                    r"|\b(?:return|refund)\w*.{0,20}\b(?:it|that|this)\b"
+                    r"|\breturn\w*.{0,20}\beligib\w*"
+                    r"|\beligib\w*.{0,20}\breturn\w*"
+                    r"|\breturn\s+(?:window|polic\w*|period)"
+                    r"|\brefund\w*\s+(?:you|your)\b"
+                ),
                 required_pattern=r"30[\s-]day",
                 description=rule.text,
             )

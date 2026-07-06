@@ -33,11 +33,28 @@ _DEFAULT_AGENT_SPEC = (
 )
 _DEFAULT_DB = "runs.sqlite"
 
+# The simulator only has to write one plausible adversarial customer line, not
+# solve the task under test — a cheap, fast model does that job as well as the
+# target-tier one, at a fraction of the cost. Used only when the run's main
+# provider is a real (non-fake) model and --sim-provider wasn't overridden.
+_DEFAULT_SIM_MODEL = "anthropic/claude-haiku-4-5-20251001"
+
 
 def _build_provider(name: str) -> LLMProvider:
     if name == "fake":
         return FakeLLMProvider()
     return LiteLLMProvider(model=name)
+
+
+def _resolve_sim_provider_name(args: argparse.Namespace) -> str:
+    """The model name to drive the simulator: explicit override, else a cheap
+    default — unless the main provider is "fake", which stays fake so offline
+    runs never silently reach out to a real API."""
+    if args.sim_provider is not None:
+        return args.sim_provider
+    if args.provider == "fake":
+        return "fake"
+    return _DEFAULT_SIM_MODEL
 
 
 def _build_target(args: argparse.Namespace, spec, llm: LLMProvider) -> TargetAgent:
@@ -107,6 +124,13 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
     sample_n = args.sample_n
     tactics = _resolve_tactics(args.tactics)
 
+    # The simulator's job (write one adversarial customer line) doesn't need
+    # the target-tier model, so it defaults to a cheaper one; the scorer stays
+    # on the target's own model, since it measures *that* model's instability
+    # by resampling it — a different model there would score the wrong thing.
+    sim_provider_name = _resolve_sim_provider_name(args)
+    sim_llm = llm if sim_provider_name == args.provider else _build_provider(sim_provider_name)
+
     # Self-consistency needs >= 2 samples to detect any disagreement; a single
     # sample can only ever score 0.0, so skip the scorer (and every one of its
     # calls) entirely below that threshold.
@@ -115,9 +139,10 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
     nodes = 1 + budget * n_tactics
     est_calls = nodes + (nodes * sample_n if use_scorer else 0) + budget * n_tactics
     consistency = f"sample-n={sample_n}" if use_scorer else "off"
+    sim_note = f", simulator={sim_provider_name}" if sim_provider_name != args.provider else ""
     console.print(
         f"[dim]Running against [bold]{args.provider}[/bold] "
-        f"(budget={budget}, {n_tactics} tactics, consistency={consistency}) - "
+        f"(budget={budget}, {n_tactics} tactics, consistency={consistency}{sim_note}) - "
         f"up to ~{est_calls} model calls. This can take a while.[/dim]"
     )
 
@@ -125,7 +150,7 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
         runner = build_runner(
             agent_spec=spec,
             target=target,
-            sim_provider=llm,
+            sim_provider=sim_llm,
             scorer_provider=llm if use_scorer else None,
             store=store,
             tactics=tactics,
@@ -178,6 +203,14 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="Run a stress test against a target agent.")
     run_parser.add_argument("--agent-spec", type=Path, default=_DEFAULT_AGENT_SPEC)
     run_parser.add_argument("--provider", default="fake")
+    run_parser.add_argument(
+        "--sim-provider",
+        default=None,
+        help=(
+            "Model for the adversarial simulator (default: a cheap model, since "
+            "it doesn't need target-tier quality; stays 'fake' if --provider is 'fake')."
+        ),
+    )
     run_parser.add_argument("--target-url", default=None)
     run_parser.add_argument("--db", default=_DEFAULT_DB)
     run_parser.add_argument(

@@ -1,15 +1,40 @@
+import argparse
 import re
 from datetime import datetime, timezone
 
 import pytest
 
-from agent_stress_test.cli import main
+from agent_stress_test.cli import _DEFAULT_SIM_MODEL, _resolve_sim_provider_name, main
 from agent_stress_test.config import load_agent_spec
 from agent_stress_test.models import Cluster, Message, Node, Run, Verdict
 from agent_stress_test.orchestration.reliability import score_run
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 _RUN_ID_RE = re.compile(r"Run ID:\s*(\S+)")
+
+
+def _args(**overrides) -> argparse.Namespace:
+    defaults = {"provider": "fake", "sim_provider": None}
+    return argparse.Namespace(**{**defaults, **overrides})
+
+
+def test_sim_provider_defaults_to_cheap_model_for_a_real_provider():
+    assert _resolve_sim_provider_name(_args(provider="anthropic/claude-sonnet-5")) == (
+        _DEFAULT_SIM_MODEL
+    )
+
+
+def test_sim_provider_stays_fake_when_main_provider_is_fake():
+    assert _resolve_sim_provider_name(_args(provider="fake")) == "fake"
+
+
+def test_sim_provider_explicit_override_wins():
+    assert (
+        _resolve_sim_provider_name(
+            _args(provider="anthropic/claude-sonnet-5", sim_provider="openai/gpt-4o")
+        )
+        == "openai/gpt-4o"
+    )
 
 
 def test_cli_run_executes_against_the_fake_provider(tmp_path, sample_agent_spec_path, capsys):

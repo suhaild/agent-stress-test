@@ -51,7 +51,9 @@ def test_sample_n_calls_complete_n_times(mock_completion):
 
     results = provider.sample_n(messages, 4)
 
-    assert results == ["reply-1", "reply-2", "reply-3", "reply-4"]
+    # sample_n's contract is "n independent completions" — the samples run
+    # concurrently, so submission order isn't preserved, only the full set.
+    assert sorted(results) == ["reply-1", "reply-2", "reply-3", "reply-4"]
     assert mock_completion.call_count == 4
 
 

@@ -1,5 +1,7 @@
 """Deterministic fake LLMProvider (for tests)."""
 
+import threading
+
 from agent_stress_test.models import Message
 from agent_stress_test.ports import LLMProvider
 
@@ -25,17 +27,21 @@ class FakeLLMProvider(LLMProvider):
         self._default_reply_prefix = default_reply_prefix
         self._next_index = 0
         self.calls: list[list[Message]] = []
+        # Guards `_next_index`/`calls` so the fake stays correct when called
+        # concurrently (the orchestration layer runs tactic branches in parallel).
+        self._lock = threading.Lock()
 
     def complete(self, messages: list[Message]) -> str:
-        self.calls.append(list(messages))
-        if self._responses is not None:
-            if self._next_index >= len(self._responses):
-                if not self._cycle:
-                    raise IndexError("FakeLLMProvider: scripted responses exhausted")
-                self._next_index = 0
-            reply = self._responses[self._next_index]
-            self._next_index += 1
-            return reply
+        with self._lock:
+            self.calls.append(list(messages))
+            if self._responses is not None:
+                if self._next_index >= len(self._responses):
+                    if not self._cycle:
+                        raise IndexError("FakeLLMProvider: scripted responses exhausted")
+                    self._next_index = 0
+                reply = self._responses[self._next_index]
+                self._next_index += 1
+                return reply
         last_content = messages[-1].content if messages else ""
         return f"{self._default_reply_prefix}{last_content}"
 

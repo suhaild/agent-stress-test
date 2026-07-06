@@ -37,7 +37,8 @@ def render_reliability(console: Console, run: Run, report: ReliabilityReport) ->
     body.append(f"{report.score:.0%}\n", style=f"{style} underline")
     body.append(
         f"{report.failing_steps} of {report.total_steps} steps failed "
-        f"({report.per_step_failure_rate:.0%} per-step failure rate)",
+        f"({report.per_step_failure_rate:.0%} per-step failure rate, "
+        f"compounded over ~{report.conversation_depth:.1f} turns)",
         style="dim",
     )
     console.print(

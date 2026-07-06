@@ -3,10 +3,16 @@
 This is the only module in the codebase allowed to import litellm.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 import litellm
 
 from agent_stress_test.models import Message
 from agent_stress_test.ports import LLMProvider
+
+# Cap on concurrent in-flight requests for sample_n, independent of n itself,
+# so a large --sample-n doesn't fan out an unbounded burst of requests.
+_MAX_SAMPLE_WORKERS = 5
 
 
 def _to_litellm_message(message: Message) -> dict:
@@ -38,4 +44,8 @@ class LiteLLMProvider(LLMProvider):
     def sample_n(self, messages: list[Message], n: int) -> list[str]:
         if n < 1:
             raise ValueError("n must be >= 1")
-        return [self.complete(messages) for _ in range(n)]
+        # The n samples are identical, independent requests (same prompt, no
+        # shared state) — run them concurrently instead of one after another.
+        workers = min(n, _MAX_SAMPLE_WORKERS)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            return list(executor.map(lambda _: self.complete(messages), range(n)))
