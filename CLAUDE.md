@@ -70,7 +70,7 @@ Name components by their pattern so the codebase stays legible. These describe w
 - `pydantic` — data models and settings.
 - `pytest` — testing (with mocking; `pytest-asyncio` only if async is actually used).
 - `rich` / `textual` — the terminal report.
-- `hdbscan` / scikit-learn + `sentence-transformers` (or provider embeddings) — failure clustering.
+- An `Embedder` port + a built-in deterministic hashing embedder (token-overlap → cosine, offline, no model download) + pure-Python agglomerative clustering — failure clustering. Zero new dependencies, fully offline. A real semantic embedder (e.g. sentence-transformers) can slot in behind the same port later — see the build plan's Judge Enhancement Ideas section.
 
 **Do NOT use (deliberate choices):**
 - No LangChain, LlamaIndex, or any agent framework — they bury the clean architecture.

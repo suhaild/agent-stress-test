@@ -22,6 +22,18 @@ class TargetAgent(ABC):
     def respond(self, conversation: list[Message]) -> AgentResponse: ...
 
 
+class Embedder(ABC):
+    """Turns text into vectors for failure clustering.
+
+    A deterministic offline implementation (hashing) backs the tests and the
+    default; a semantic implementation (provider or local model) can slot in
+    behind the same interface without changing the clusterer.
+    """
+
+    @abstractmethod
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+
 class Store(ABC):
     """Persist and reload runs, nodes, verdicts, clusters."""
 
