@@ -19,7 +19,7 @@ from agent_stress_test.orchestration.search import GreedyBestFirstSearch, Search
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import LLMProvider, Store, TargetAgent
 from agent_stress_test.reasoning.consistency import ConsistencyScorer
-from agent_stress_test.reasoning.judge import Judge, RulesJudge, build_checks
+from agent_stress_test.reasoning.judge import Judge, build_two_tier_judge
 from agent_stress_test.reasoning.simulator import Simulator
 
 _DEFAULT_SEED: list[Message] = [
@@ -91,11 +91,15 @@ class Runner:
         )
 
     def _persist(self, run: Run, tree: ConversationTree) -> None:
-        self._store.save_run(run)
+        # Nodes/verdicts must land before the run row flips to "completed" —
+        # a concurrent reader (the dashboard's SSE loop) treats that status as
+        # the signal that the full tree is safe to reload, and each save here
+        # commits immediately (see SqliteStore._upsert).
         for node in tree.nodes():
             self._store.save_node(node)
         for verdict in tree.all_verdicts():
             self._store.save_verdict(verdict)
+        self._store.save_run(run)
 
 
 def build_runner(
@@ -111,14 +115,21 @@ def build_runner(
 ) -> Runner:
     """Wire the workers into a ready-to-run Runner (the composition root).
 
-    ``sim_provider`` drives the adversarial simulator. ``scorer_provider``, when
-    given, backs the self-consistency scorer (typically the same model that
-    backs an LLM target); omit it for non-LLM targets and instability defaults
-    to 0.0. ``judge`` defaults to the tier-1 ``RulesJudge`` built from the spec.
-    ``store``, when given, persists the finished run through the ``Store`` port.
+    ``sim_provider`` drives the adversarial simulator, and — when ``judge`` is
+    not given — also backs the tier-2 LLM judge, so ambiguous cases tier 1's
+    deterministic checks can't resolve on their own (e.g. a reply that
+    generically lists "returns" as a capability vs. one that's actually
+    processing a customer's return) get a real judgment instead of an
+    ever-more-elaborate regex. Tier 1 still decides first and wins whenever it
+    fires; the LLM is only consulted when every deterministic check passes
+    (see ``TwoTierJudge``). ``scorer_provider``, when given, backs the
+    self-consistency scorer (typically the same model that backs an LLM
+    target); omit it for non-LLM targets and instability defaults to 0.0.
+    ``store``, when given, persists the finished run through the ``Store``
+    port.
     """
     simulator = Simulator(sim_provider)
-    resolved_judge = judge if judge is not None else RulesJudge(build_checks(agent_spec))
+    resolved_judge = judge if judge is not None else build_two_tier_judge(agent_spec, sim_provider)
     scorer = ConsistencyScorer(scorer_provider) if scorer_provider is not None else None
     strategy = GreedyBestFirstSearch(
         simulator,

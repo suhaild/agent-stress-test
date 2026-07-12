@@ -19,6 +19,7 @@ dependencies = [
     "uvicorn",
     "jinja2",
     "python-multipart",
+    "pysbd",
 ]
 
 [project.optional-dependencies]

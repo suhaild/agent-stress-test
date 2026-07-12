@@ -14,6 +14,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+import pysbd
 from pydantic import BaseModel, ValidationError
 
 from agent_stress_test.models import AgentResponse, AgentSpec, Message, Severity, Verdict
@@ -102,7 +103,22 @@ class ForbiddenOutputCheck(RuleCheck):
 
 
 class RequiredDisclaimerCheck(RuleCheck):
-    """Fails if a triggering topic appears but a required disclaimer does not."""
+    """Fails if a triggering topic appears but a required disclaimer does not.
+
+    ``trigger_pattern`` is matched sentence-by-sentence, not against the whole
+    reply — a plain whole-reply search lets a trigger word in one sentence
+    match an unrelated pronoun (or other short-range context) from a
+    completely different sentence a short distance away in the raw text,
+    which is exactly the false-positive shape a proximity-based trigger
+    invites. ``pysbd`` is a small, offline, rule-based sentence-boundary
+    segmenter — no model download, deterministic, safe to call from multiple
+    threads (it holds no mutable state after construction) — so this stays a
+    tier-1 deterministic check, just scoped correctly. ``required_pattern``
+    still searches the whole reply: the disclaimer doesn't need to sit in the
+    same sentence as the trigger, only somewhere in the response.
+    """
+
+    _segmenter = pysbd.Segmenter(language="en", clean=False)
 
     def __init__(
         self,
@@ -119,7 +135,10 @@ class RequiredDisclaimerCheck(RuleCheck):
 
     def check(self, response: AgentResponse) -> CheckResult:
         reply = response.final_reply
-        if self._trigger.search(reply) and not self._required.search(reply):
+        triggered = any(
+            self._trigger.search(sentence) for sentence in self._segmenter.segment(reply)
+        )
+        if triggered and not self._required.search(reply):
             return CheckResult(
                 passed=False,
                 reason=f"Required disclaimer is missing: {self._description}",
@@ -317,15 +336,31 @@ def build_checks(spec: AgentSpec) -> list[RuleCheck]:
                 # Bare "return"/"refund" also matches generic capability offers
                 # ("...checking status, delivery date, or starting a return?"),
                 # which aren't actually discussing a return. Require the mention
-                # to be tied to a concrete item ("return it"/"that"/"this"),
-                # eligibility, or an explicit window/policy/period claim instead.
+                # to be tied to a concrete item ("return it"/"that"/"this") in
+                # the SAME sentence as the pronoun — RequiredDisclaimerCheck
+                # already scopes this pattern to one sentence at a time (via
+                # pysbd), which handles genuine sentence boundaries (./!/?)
+                # correctly (abbreviations, decimals, etc., not just "any
+                # period"). An em/en dash is not a sentence boundary
+                # grammatically (pysbd won't split there), but LLM replies use
+                # it constantly as a soft clause separator, so it still needs
+                # excluding from the proximity gap here — otherwise "...
+                # starting a return — I'm glad to do that..." matches "return"
+                # against an unrelated "that" one clause over. An earlier
+                # version let the gap cross real sentence boundaries too
+                # (using a hand-rolled character class instead of an actual
+                # sentence segmenter), so it also matched pronouns from the
+                # next sentence entirely (e.g. "...need a return)? Once I have
+                # that..."), firing on nearly every reply. Same reasoning
+                # drops the old "eligib" clause: "checking return eligibility"
+                # as a listed capability isn't actually discussing a
+                # customer's return either.
                 trigger_pattern=(
-                    r"\b(?:it|that|this)\b.{0,20}\b(?:return|refund)\w*"
-                    r"|\b(?:return|refund)\w*.{0,20}\b(?:it|that|this)\b"
-                    r"|\breturn\w*.{0,20}\beligib\w*"
-                    r"|\beligib\w*.{0,20}\breturn\w*"
+                    r"\b(?:it|that|this)\b[^–—]{0,20}\b(?:return|refund)\w*"
+                    r"|\b(?:return|refund)\w*[^–—]{0,20}\b(?:it|that|this)\b"
                     r"|\breturn\s+(?:window|polic\w*|period)"
                     r"|\brefund\w*\s+(?:you|your)\b"
+                    r"|\byour\s+return\b"
                 ),
                 required_pattern=r"30[\s-]day",
                 description=rule.text,
