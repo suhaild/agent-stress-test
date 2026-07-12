@@ -157,6 +157,18 @@ def test_malformed_output_falls_back_conservatively(sample_agent_spec_path):
         assert verdict.reason.strip()
 
 
+def test_strips_a_markdown_json_fence_before_parsing(sample_agent_spec_path):
+    # Confirmed against a live model: Claude wraps its JSON in ```json ... ```
+    # even when told to respond with ONLY the JSON object.
+    spec = load_agent_spec(sample_agent_spec_path)
+    fenced = "```json\n" + judge_json({"no-self-refund": (True, 0.9)}) + "\n```"
+    provider = FakeLLMProvider(responses=[fenced])
+
+    verdicts = LLMJudge(provider, spec).judge(resp("anything"), run_id="r", node_id="n")
+
+    assert failing_rule_ids(verdicts) == {"no-self-refund"}
+
+
 # --- Contract ------------------------------------------------------------
 
 

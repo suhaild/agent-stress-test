@@ -1,0 +1,26 @@
+{% if cases %}
+<div class="panel overflow-hidden">
+  <table class="w-full text-sm">
+    <thead>
+      <tr style="background: var(--bg-panel-raised);">
+        <th class="field-label text-left px-4 py-3">Rule</th>
+        <th class="field-label text-left px-4 py-3">Tactic</th>
+        <th class="field-label text-center px-4 py-3">Status</th>
+        <th class="field-label text-center px-4 py-3">Still Failing?</th>
+        <th class="field-label text-left px-4 py-3">Reason</th>
+        <th class="field-label text-right px-4 py-3"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for case in cases %}
+      {% set result = results.get(case.id) %}
+      {% include "fragments/regression_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel p-6 text-sm text-[var(--ink-dim)]">
+  No regression cases locked in yet — open a completed run and click "Lock" on a failure cluster.
+</div>
+{% endif %}

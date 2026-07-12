@@ -2,7 +2,16 @@
 
 from abc import ABC, abstractmethod
 
-from agent_stress_test.models import AgentResponse, Cluster, Message, Node, Run, Verdict
+from agent_stress_test.models import (
+    AgentResponse,
+    Cluster,
+    Message,
+    Node,
+    RegressionCase,
+    Run,
+    SystemPromptVersion,
+    Verdict,
+)
 
 
 class LLMProvider(ABC):
@@ -63,3 +72,18 @@ class Store(ABC):
 
     @abstractmethod
     def get_clusters(self, run_id: str) -> list[Cluster]: ...
+
+    @abstractmethod
+    def save_regression_case(self, case: RegressionCase) -> None: ...
+
+    @abstractmethod
+    def get_regression_case(self, case_id: str) -> RegressionCase | None: ...
+
+    @abstractmethod
+    def get_regression_cases(self, agent_spec_name: str) -> list[RegressionCase]: ...
+
+    @abstractmethod
+    def save_system_prompt_version(self, version: SystemPromptVersion) -> None: ...
+
+    @abstractmethod
+    def get_system_prompt_versions(self, agent_spec_name: str) -> list[SystemPromptVersion]: ...

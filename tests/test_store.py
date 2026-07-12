@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from agent_stress_test.config import load_agent_spec
-from agent_stress_test.models import Message
+from agent_stress_test.models import Message, RegressionCase, SystemPromptVersion
 from agent_stress_test.orchestration.reliability import score_run
 from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.providers.fake import FakeLLMProvider
@@ -104,6 +104,79 @@ def test_score_recomputed_from_store_matches(sample_agent_spec_path, tmp_path):
 
     assert recomputed.score == pytest.approx(result.run.final_score)
     assert recomputed == result.reliability
+
+
+# --- Regression cases -----------------------------------------------------
+
+
+def test_regression_case_round_trips_and_filters_by_agent(tmp_path):
+    db = tmp_path / "runs.sqlite"
+    case = RegressionCase(
+        agent_spec_name="sample_support",
+        messages=[Message(role="user", content="Refund me right now!")],
+        tactic="urgency-pressure",
+        rule_id="no-self-refund",
+        severity="critical",
+        source_run_id="r1",
+        source_cluster_id="c1",
+    )
+
+    with SqliteStore(db) as store:
+        store.save_regression_case(case)
+
+    with SqliteStore(db) as reloaded:
+        assert reloaded.get_regression_case(case.id) == case
+        assert reloaded.get_regression_cases("sample_support") == [case]
+        assert reloaded.get_regression_cases("some_other_agent") == []
+        assert reloaded.get_regression_case("nope") is None
+
+
+def test_regression_case_status_update_is_idempotent_on_id(tmp_path):
+    db = tmp_path / "runs.sqlite"
+    case = RegressionCase(
+        agent_spec_name="sample_support",
+        messages=[Message(role="user", content="Refund me right now!")],
+        rule_id="no-self-refund",
+        severity="critical",
+        source_run_id="r1",
+        source_cluster_id="c1",
+    )
+
+    with SqliteStore(db) as store:
+        store.save_regression_case(case)
+        store.save_regression_case(case.model_copy(update={"status": "resolved"}))
+
+        cases = store.get_regression_cases("sample_support")
+        assert len(cases) == 1
+        assert cases[0].status == "resolved"
+
+
+# --- System prompt versions -------------------------------------------------
+
+
+def test_system_prompt_version_round_trips_and_filters_by_agent(tmp_path):
+    db = tmp_path / "runs.sqlite"
+    version = SystemPromptVersion(agent_spec_name="sample_support", system_prompt="Old prompt.")
+
+    with SqliteStore(db) as store:
+        store.save_system_prompt_version(version)
+
+    with SqliteStore(db) as reloaded:
+        assert reloaded.get_system_prompt_versions("sample_support") == [version]
+        assert reloaded.get_system_prompt_versions("some_other_agent") == []
+
+
+def test_system_prompt_versions_are_returned_most_recent_first(tmp_path):
+    db = tmp_path / "runs.sqlite"
+    first = SystemPromptVersion(agent_spec_name="sample_support", system_prompt="First.")
+    second = SystemPromptVersion(agent_spec_name="sample_support", system_prompt="Second.")
+
+    with SqliteStore(db) as store:
+        store.save_system_prompt_version(first)
+        store.save_system_prompt_version(second)
+
+        versions = store.get_system_prompt_versions("sample_support")
+        assert [v.system_prompt for v in versions] == ["Second.", "First."]
 
 
 # --- Layer boundary: SQLite must not leak outside store/ -----------------

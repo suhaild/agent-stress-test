@@ -1,7 +1,13 @@
 import pytest
 from pydantic import ValidationError
 
-from agent_stress_test.config import Settings, load_agent_spec, load_settings
+from agent_stress_test.config import (
+    Settings,
+    _replace_system_prompt_block,
+    apply_system_prompt,
+    load_agent_spec,
+    load_settings,
+)
 
 
 def test_load_agent_spec_from_sample_yaml(sample_agent_spec_path):
@@ -49,3 +55,77 @@ def test_load_settings_populates_environ_via_dotenv(tmp_path, monkeypatch):
 def test_settings_has_no_api_key_fields():
     assert "api_key" not in Settings.model_fields
     assert not any("key" in name.lower() for name in Settings.model_fields)
+
+
+# --- _replace_system_prompt_block / apply_system_prompt -------------------
+
+
+def test_replace_system_prompt_block_preserves_everything_else():
+    raw = (
+        "name: demo\n"
+        "\n"
+        "system_prompt: |\n"
+        "  Old line one.\n"
+        "  Old line two.\n"
+        "\n"
+        "tools: []\n"
+        "\n"
+        "rules:\n"
+        "  - id: r1\n"
+        "    text: \"Do the thing.\"  # a comment worth keeping\n"
+        "    severity: major\n"
+    )
+
+    updated = _replace_system_prompt_block(raw, "New paragraph one.\n\nNew paragraph two.")
+
+    assert updated == (
+        "name: demo\n"
+        "\n"
+        "system_prompt: |\n"
+        "  New paragraph one.\n"
+        "\n"
+        "  New paragraph two.\n"
+        "\n"
+        "tools: []\n"
+        "\n"
+        "rules:\n"
+        "  - id: r1\n"
+        "    text: \"Do the thing.\"  # a comment worth keeping\n"
+        "    severity: major\n"
+    )
+
+
+def test_replace_system_prompt_block_raises_without_a_system_prompt_key():
+    with pytest.raises(ValueError):
+        _replace_system_prompt_block("name: demo\ntools: []\n", "anything")
+
+
+def test_apply_system_prompt_replaces_the_block_and_preserves_everything_else(
+    sample_agent_spec_path, tmp_path
+):
+    spec_copy = tmp_path / "sample_support.yaml"
+    spec_copy.write_text(sample_agent_spec_path.read_text(encoding="utf-8"), encoding="utf-8")
+    original_text = spec_copy.read_text(encoding="utf-8")
+
+    new_spec = apply_system_prompt(
+        spec_copy, "A brand-new system prompt.\n\nWith a second paragraph."
+    )
+
+    # YAML's `|` block scalar keeps exactly one trailing newline (clip
+    # chomping) — same as the pre-existing system_prompt already did.
+    assert new_spec.system_prompt == "A brand-new system prompt.\n\nWith a second paragraph.\n"
+    updated_text = spec_copy.read_text(encoding="utf-8")
+    # Everything from `tools:` onward — including the hand-written comment
+    # explaining the mention-return-window regex — is untouched.
+    assert original_text.split("tools:", 1)[1] == updated_text.split("tools:", 1)[1]
+
+
+def test_apply_system_prompt_rolls_back_on_invalid_result(sample_agent_spec_path, tmp_path):
+    spec_copy = tmp_path / "sample_support.yaml"
+    spec_copy.write_text(sample_agent_spec_path.read_text(encoding="utf-8"), encoding="utf-8")
+    original_text = spec_copy.read_text(encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        apply_system_prompt(spec_copy, "")  # empty prompt violates AgentSpec's min_length=1
+
+    assert spec_copy.read_text(encoding="utf-8") == original_text

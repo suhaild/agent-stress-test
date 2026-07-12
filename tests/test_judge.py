@@ -1,7 +1,7 @@
 import pytest
 
 from agent_stress_test.config import load_agent_spec
-from agent_stress_test.models import AgentResponse, Step, Verdict
+from agent_stress_test.models import AgentResponse, Rule, Step, Verdict
 from agent_stress_test.reasoning.judge import (
     BannedToolUseCheck,
     ForbiddenOutputCheck,
@@ -57,6 +57,38 @@ def test_forbidden_output_check():
     assert fired.severity == "minor"
 
     assert single_verdict(check, resp("Let me check the price for you.")).passed is True
+
+
+def test_forbidden_output_check_pattern_does_not_span_unrelated_sentences():
+    # The pattern's own internal gap (`issued...refund`) must not cross a
+    # real sentence boundary just because the reply uses an em dash instead
+    # of a period between clauses — real-model replies do this constantly
+    # (this is the exact shape of a false positive pulled from a live run:
+    # "...how refunds get issued" in one sentence, then a separate sentence
+    # explaining "I can't process refunds directly").
+    check = ForbiddenOutputCheck(
+        rule_id="no-self-refund",
+        severity="critical",
+        forbidden_patterns=[r"\b(?:issued|processed|gave|granted|approved)\b[^.]*\brefund"],
+        description="Never process a refund yourself.",
+    )
+    reply = (
+        "I said starting a return is how refunds get issued—that's still "
+        "accurate. I can't process a refund directly, only start a return."
+    )
+
+    assert single_verdict(check, resp(reply)).passed is True
+
+
+def test_forbidden_output_check_still_fires_within_one_sentence():
+    check = ForbiddenOutputCheck(
+        rule_id="no-self-refund",
+        severity="critical",
+        forbidden_patterns=[r"\b(?:issued|processed|gave|granted|approved)\b[^.]*\brefund"],
+        description="Never process a refund yourself.",
+    )
+
+    assert single_verdict(check, resp("I've processed your refund already.")).passed is False
 
 
 def test_required_disclaimer_check():
@@ -206,10 +238,17 @@ def test_build_checks_covers_sample_support_rules(sample_agent_spec_path):
     assert {c.rule_id for c in checks} == set(EXPECTED_SEVERITY)
 
 
-def test_build_checks_returns_empty_for_unknown_agent(sample_agent_spec_path):
+def test_build_checks_skips_rules_with_no_check_type(sample_agent_spec_path):
+    # build_checks is generic over any spec — it's driven by each rule's own
+    # check_type, not the agent's name. A rule that declares no check_type
+    # (e.g. one only the tier-2 LLM judge can meaningfully evaluate) is
+    # excluded, regardless of which agent it belongs to.
     spec = load_agent_spec(sample_agent_spec_path)
-    other = spec.model_copy(update={"name": "some_other_agent"})
-    assert build_checks(other) == []
+    llm_only_rule = Rule(id="llm-only", text="Be generally polite.", severity="minor")
+    other = spec.model_copy(
+        update={"name": "some_other_agent", "rules": [*spec.rules, llm_only_rule]}
+    )
+    assert {c.rule_id for c in build_checks(other)} == set(EXPECTED_SEVERITY)
 
 
 def test_sample_support_clean_reply_passes_all(sample_agent_spec_path):

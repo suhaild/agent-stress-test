@@ -1,15 +1,24 @@
 """Bundled demo agent (built on an LLMProvider)."""
 
+import re
+
 from agent_stress_test.models import AgentResponse, AgentSpec, Message, Step
 from agent_stress_test.ports import LLMProvider, TargetAgent
 
-_STEP_FIELD_BY_PREFIX = {
-    "Thought:": "thought",
-    "Action:": "action",
-    "Action Input:": "action_input",
-    "Observation:": "observation",
+_STEP_FIELD_BY_LABEL = {
+    "Thought": "thought",
+    "Action": "action",
+    "Action Input": "action_input",
+    "Observation": "observation",
 }
-_FINAL_ANSWER_PREFIX = "Final Answer:"
+_FINAL_ANSWER_LABEL = "Final Answer"
+# "Action Input" must be tried before "Action" so it isn't matched short.
+_LABELS = ("Thought", "Action Input", "Action", "Observation", _FINAL_ANSWER_LABEL)
+# Tolerates markdown emphasis real models routinely wrap section labels in
+# (`**Final Answer:**`) — matching only the bare "Final Answer:" prefix misses
+# these and silently falls back to treating the whole completion, reasoning
+# included, as the reply (see `_parse_react_completion`'s docstring).
+_LABEL_PATTERN = re.compile(r"^[*_]{0,2}(" + "|".join(_LABELS) + r"):\s*[*_]{0,2}\s*")
 
 
 def _render_system_prompt(spec: AgentSpec) -> str:
@@ -36,35 +45,50 @@ def _parse_react_completion(text: str) -> AgentResponse:
     """Parse a ReAct-style completion into a trace and a final reply.
 
     Recognizes 'Thought:'/'Action:'/'Action Input:'/'Observation:'/'Final
-    Answer:' line prefixes. Text using none of them is treated as a plain
-    reply with no trace — this parser never fabricates steps.
+    Answer:' line labels, tolerating markdown emphasis around them
+    (`**Final Answer:**`) — real models (Claude included) format these labels
+    that way constantly, and matching only the bare prefix would miss them
+    entirely, silently falling back to treating the whole completion —
+    reasoning included — as the reply. Once 'Final Answer:' is seen, every
+    line after it is part of the reply, not just the rest of that one line —
+    models write it as a multi-paragraph block, not a single line. Text using
+    none of these labels at all is treated as a plain reply with no trace —
+    this parser never fabricates steps.
     """
     steps: list[Step] = []
     current: dict[str, str] = {}
     final_reply = text.strip()
+    final_answer_lines: list[str] | None = None
 
     for line in text.splitlines():
-        stripped = line.strip()
-
-        prefix_match = next(
-            (p for p in _STEP_FIELD_BY_PREFIX if stripped.startswith(p)), None
-        )
-        if prefix_match is not None:
-            field = _STEP_FIELD_BY_PREFIX[prefix_match]
-            if field == "thought" and current:
-                steps.append(Step(**current))
-                current = {}
-            current[field] = stripped[len(prefix_match) :].strip()
+        if final_answer_lines is not None:
+            final_answer_lines.append(line)
             continue
 
-        if stripped.startswith(_FINAL_ANSWER_PREFIX):
+        stripped = line.strip()
+        match = _LABEL_PATTERN.match(stripped)
+        if match is None:
+            continue
+        label = match.group(1)
+        remainder = stripped[match.end() :].strip()
+
+        if label == _FINAL_ANSWER_LABEL:
             if current:
                 steps.append(Step(**current))
                 current = {}
-            final_reply = stripped[len(_FINAL_ANSWER_PREFIX) :].strip()
+            final_answer_lines = [remainder] if remainder else []
+            continue
+
+        field = _STEP_FIELD_BY_LABEL[label]
+        if field == "thought" and current:
+            steps.append(Step(**current))
+            current = {}
+        current[field] = remainder
 
     if current:
         steps.append(Step(**current))
+    if final_answer_lines is not None:
+        final_reply = "\n".join(final_answer_lines).strip()
 
     return AgentResponse(final_reply=final_reply, trace=steps or None)
 

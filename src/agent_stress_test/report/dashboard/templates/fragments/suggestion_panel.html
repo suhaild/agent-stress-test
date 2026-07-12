@@ -1,0 +1,33 @@
+{% if suggestion %}
+<div class="panel p-5 space-y-3">
+  <div class="flex flex-wrap items-center justify-between gap-2">
+    <p class="font-mono text-xs uppercase tracking-wide text-[var(--ink-faint)]">
+      Suggested Fix — {{ rule.id }} <span class="text-[var(--wire)]">·</span> {{ rule.severity }}
+    </p>
+    <span class="tag {% if suggestion.confidence >= 0.7 %}tag-pass{% elif suggestion.confidence >= 0.4 %}tag-warn{% else %}tag-fail{% endif %}">
+      confidence {{ "%.0f"|format(suggestion.confidence * 100) }}%
+    </span>
+  </div>
+  <p class="text-sm text-[var(--ink)]">{{ suggestion.rationale }}</p>
+  {% if diff_blocks %}
+  {% include "fragments/diff_blocks.html" %}
+  <div class="flex items-center justify-between gap-3">
+    <p class="font-mono text-[.68rem] text-[var(--ink-faint)]">
+      Writes directly to the AgentSpec YAML on disk. The prompt it replaces is saved
+      automatically, so it can be undone from the regression corpus page any time.
+    </p>
+    <form hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/system-prompt/apply"
+          hx-target="#suggestion-panel" hx-swap="innerHTML"
+          hx-confirm="Write this suggested system prompt to config/agents/{{ agent_spec_name }}'s YAML file now?">
+      <input type="hidden" name="suggested_system_prompt" value="{{ suggestion.suggested_system_prompt }}">
+      <button type="submit" class="btn-stamp text-xs whitespace-nowrap">Apply Fix →</button>
+    </form>
+  </div>
+  {% else %}
+  <p class="text-sm" style="color: var(--ink-dim);">No textual difference proposed.</p>
+  <p class="font-mono text-[.68rem] text-[var(--ink-faint)]">
+    A suggestion only — nothing here is applied automatically. Paste it into the AgentSpec YAML yourself if you agree with it.
+  </p>
+  {% endif %}
+</div>
+{% endif %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Regression Corpus — {{ agent_spec_name }}{% endblock %}
+{% block content %}
+<div class="mb-8 reveal">
+  <h1 class="brand-mark text-2xl md:text-3xl">{{ agent_spec_name }}</h1>
+  <p class="font-mono text-xs text-[var(--ink-faint)] mt-1.5">Regression Corpus</p>
+</div>
+
+<section class="mb-8 reveal" style="animation-delay: 60ms">
+  <form hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/regression/run"
+        hx-target="#regression-table" hx-swap="innerHTML"
+        class="panel p-6 flex flex-wrap items-end gap-4">
+    <div class="flex-1 min-w-[14rem]">
+      <label class="field-label block mb-1">Target Provider</label>
+      <p class="field-help mb-1.5">The model (or "fake") behind whichever agent you want to re-check.</p>
+      <input type="text" name="provider" value="fake" class="field-input font-mono">
+    </div>
+    <div class="flex-1 min-w-[14rem]">
+      <label class="field-label block mb-1">Target Endpoint (optional)</label>
+      <p class="field-help mb-1.5">Your own HTTP endpoint — blank uses the bundled demo agent.</p>
+      <input type="text" name="target_url" placeholder="e.g. http://localhost:5000/chat" class="field-input font-mono">
+    </div>
+    <button type="submit" class="btn-stamp">Run Regression Gate →</button>
+  </form>
+</section>
+
+<section class="mb-10 reveal" style="animation-delay: 120ms">
+  <h2 class="tag-label mb-4">Cases</h2>
+  <div id="regression-table">
+    {% include "fragments/regression_table.html" %}
+  </div>
+</section>
+
+<section class="reveal" style="animation-delay: 180ms">
+  <h2 class="tag-label mb-4">Prompt History</h2>
+  <p class="font-mono text-xs text-[var(--ink-faint)] mb-4">
+    Every applied fix saves the prompt it replaced — revert to any of these any time.
+  </p>
+  <div id="prompt-history">
+    {% include "fragments/prompt_history.html" %}
+  </div>
+</section>
+{% endblock %}

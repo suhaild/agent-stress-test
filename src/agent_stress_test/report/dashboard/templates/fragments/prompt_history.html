@@ -1,0 +1,44 @@
+{% if prompt_history %}
+<div class="space-y-3">
+  {% for row in prompt_history %}
+  <div class="panel p-4 space-y-2.5">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="font-mono text-xs uppercase tracking-wide text-[var(--ink-faint)]">
+        Revision {{ row.ordinal }} <span class="text-[var(--wire)]">·</span>
+        {{ row.version.created_at.strftime("%Y-%m-%d %H:%M UTC") }}
+      </p>
+      {% if row.is_current %}<span class="tag tag-pass">current</span>{% endif %}
+    </div>
+    {% if row.diff_blocks is none %}
+    <div class="flex items-start gap-2 py-1">
+      <span class="tag flex-shrink-0" style="opacity: .55;">initial version</span>
+      <p class="text-xs" style="color: var(--ink-faint);">{{ row.version.system_prompt }}</p>
+    </div>
+    {% elif row.diff_blocks %}
+    {% set diff_blocks = row.diff_blocks %}
+    {% include "fragments/diff_blocks.html" %}
+    {% else %}
+    <p class="text-sm" style="color: var(--ink-dim);">No textual difference.</p>
+    {% endif %}
+    <div class="flex items-center justify-between gap-3">
+      {% if row.is_current %}
+      <p class="font-mono text-[.68rem] text-[var(--ink-faint)]">This is the prompt in use right now.</p>
+      {% else %}
+      <p class="font-mono text-[.68rem] text-[var(--ink-faint)]">
+        Makes this the live prompt again — whether it's older or newer than what's running now.
+      </p>
+      <form method="post" action="/agent-specs/{{ agent_spec_name | urlencode }}/system-prompt/apply"
+            onsubmit="return confirm('Restore {{ agent_spec_name }}\'s system prompt to revision {{ row.ordinal }} ({{ row.version.created_at.strftime('%Y-%m-%d %H:%M UTC') }})?');">
+        <input type="hidden" name="suggested_system_prompt" value="{{ row.version.system_prompt }}">
+        <button type="submit" class="btn-ghost text-xs whitespace-nowrap">Restore this version →</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm" style="color: var(--ink-dim);">
+  No previous versions yet — a version is saved automatically the first time a fix is applied.
+</p>
+{% endif %}

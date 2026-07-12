@@ -1,0 +1,27 @@
+<tr style="border-top: 1px solid var(--wire);">
+  <td class="px-4 py-3 font-semibold text-[var(--ink)]">{{ case.rule_id }}</td>
+  <td class="px-4 py-3 text-[var(--ink-dim)]">{{ case.tactic or "—" }}</td>
+  <td class="px-4 py-3 text-center">
+    <span class="tag {% if case.status == 'resolved' %}tag-pass{% else %}tag-warn{% endif %}">{{ case.status }}</span>
+  </td>
+  <td class="px-4 py-3 text-center">
+    {% if result is none %}
+    <span class="text-[var(--ink-faint)]">—</span>
+    {% elif case.status == 'resolved' and result.still_failing %}
+    <span class="tag tag-fail">REGRESSION</span>
+    {% elif result.still_failing %}
+    <span class="tag tag-warn">yes</span>
+    {% else %}
+    <span class="tag tag-pass">no</span>
+    {% endif %}
+  </td>
+  <td class="px-4 py-3 text-[var(--ink-dim)]">{{ result.reason if result else "—" }}</td>
+  <td class="px-4 py-3 text-right whitespace-nowrap">
+    {% if case.status == "open" %}
+    <button type="button" hx-post="/regression-cases/{{ case.id }}/resolve"
+            hx-target="closest tr" hx-swap="outerHTML" class="btn-ghost text-xs">
+      Mark Resolved
+    </button>
+    {% endif %}
+  </td>
+</tr>

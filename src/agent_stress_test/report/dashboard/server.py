@@ -12,6 +12,7 @@ glue itself.
 
 from __future__ import annotations
 
+import difflib
 import threading
 import time
 import traceback
@@ -21,8 +22,9 @@ from types import SimpleNamespace
 from typing import Iterator
 from uuid import uuid4
 
+import pysbd
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from agent_stress_test.composition import (
@@ -33,12 +35,18 @@ from agent_stress_test.composition import (
     _resolve_tactics,
     cluster_and_persist,
 )
-from agent_stress_test.config import load_agent_spec, load_settings
-from agent_stress_test.models import Cluster, Run, Verdict
+from agent_stress_test.config import apply_system_prompt, load_agent_spec, load_settings
+from agent_stress_test.models import AgentSpec, Cluster, Run, SystemPromptVersion, Verdict
+from agent_stress_test.orchestration.regression import (
+    RegressionRunner,
+    promote_clusters_to_cases,
+)
 from agent_stress_test.orchestration.reliability import ReliabilityReport, score_run
 from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.orchestration.search import SEVERITY_WEIGHT
 from agent_stress_test.orchestration.tree import ConversationTree
+from agent_stress_test.reasoning.judge import build_two_tier_judge
+from agent_stress_test.reasoning.remediation import RemediationSuggester
 from agent_stress_test.reasoning.simulator import default_registry
 from agent_stress_test.store.sqlite_store import SqliteStore
 
@@ -99,6 +107,145 @@ def _resolve_agent_spec_path(agent_spec_id: str) -> Path:
     if any(entry["id"] == agent_spec_id for entry in list_agent_specs()):
         return _CONFIG_AGENTS_DIR / agent_spec_id
     raise ValueError(f"Unknown agent spec '{agent_spec_id}'.")
+
+
+def _find_agent_spec_path_by_name(agent_spec_name: str) -> Path:
+    """Resolve a spec's own ``.name`` (what RegressionCase is keyed on, and
+    all a run remembers) back to its current, live YAML file — a regression
+    replay (or an applied fix) must act on whatever the file says *now*, not
+    a frozen copy embedded in an old Run. Scans the same enumerated
+    ``config/agents/*.yaml`` list every other agent-spec lookup here uses,
+    never a client-supplied path."""
+    for entry in list_agent_specs():
+        path = _CONFIG_AGENTS_DIR / entry["id"]
+        if load_agent_spec(path).name == agent_spec_name:
+            return path
+    raise ValueError(f"No configured agent spec named '{agent_spec_name}'.")
+
+
+def _find_agent_spec_by_name(agent_spec_name: str) -> AgentSpec:
+    return load_agent_spec(_find_agent_spec_path_by_name(agent_spec_name))
+
+
+def _locked_cluster_ids(store: SqliteStore, agent_spec_name: str) -> set[str]:
+    """Cluster ids already promoted into the regression corpus — so the Lock
+    button can show "locked" instead of silently minting duplicate cases."""
+    return {case.source_cluster_id for case in store.get_regression_cases(agent_spec_name)}
+
+
+_SENTENCE_SEGMENTER = pysbd.Segmenter(language="en", clean=False)
+
+
+def _normalize_for_diff(text: str) -> list[str]:
+    """Split text into sentences for diffing, ignoring incidental line-wrap
+    width. A raw line-based diff is misleading here: the YAML's system_prompt
+    is hard-wrapped at a fixed column width, but an LLM's suggested
+    replacement rarely reproduces that exact wrap point — so a plain
+    ``str.splitlines()`` diff shows the whole paragraph as removed-and-re-added
+    even when only one sentence actually changed. Collapsing whitespace first
+    (so wrapping can't matter) and segmenting by sentence gives a diff that
+    tracks meaning, not incidental formatting.
+    """
+    collapsed = " ".join(text.split())
+    return [s.strip() for s in _SENTENCE_SEGMENTER.segment(collapsed) if s.strip()]
+
+
+def _diff_blocks(old_text: str, new_text: str) -> list[dict]:
+    """Groups a unified diff into template-ready blocks for a browser
+    audience, not a `git diff` reader: each contiguous run of unchanged
+    sentences becomes one ``{"kind": "context", "text": ...}`` row (labeled
+    "unchanged" in the template — shown only for orientation, so it's clear
+    it's surrounding prompt text, not part of the edit), and each run of
+    removed/added sentences becomes one ``{"kind": "change", "previous":
+    [...], "suggested": [...]}`` pair, labeled "previous"/"suggested"
+    explicitly rather than relying on red/green coloring alone to say which
+    side is which. The raw ``---``/``+++``/``@@ -3,4 +3,4 @@`` unified-diff
+    header lines (meaningful line positions to a `git diff` reader, noise to
+    everyone else) are dropped entirely.
+    """
+    lines = difflib.unified_diff(_normalize_for_diff(old_text), _normalize_for_diff(new_text), lineterm="")
+    blocks: list[dict] = []
+    previous: list[str] = []
+    suggested: list[str] = []
+    context: list[str] = []
+
+    def flush_change() -> None:
+        if previous or suggested:
+            blocks.append({"kind": "change", "previous": list(previous), "suggested": list(suggested)})
+            previous.clear()
+            suggested.clear()
+
+    def flush_context() -> None:
+        if context:
+            blocks.append({"kind": "context", "text": " ".join(context)})
+            context.clear()
+
+    for line in lines:
+        if line.startswith("---") or line.startswith("+++") or line.startswith("@@"):
+            continue
+        if line.startswith("-"):
+            flush_context()
+            previous.append(line[1:])
+        elif line.startswith("+"):
+            flush_context()
+            suggested.append(line[1:])
+        else:
+            flush_change()
+            context.append(line[1:])
+    flush_change()
+    flush_context()
+    return blocks
+
+
+def _record_prompt_version(
+    store: SqliteStore, agent_spec_name: str, system_prompt: str
+) -> None:
+    """Content-addressed history: records ``system_prompt`` as a version only
+    if an identical one isn't already on file for this agent. Without this,
+    restoring an old version (or re-applying one just undone) would log a
+    fresh duplicate row every time — the history would grow on every click
+    instead of being a genuine list of distinct versions. Restoring content
+    that's already recorded just moves which row counts as "current"; it
+    never mints a new one.
+    """
+    already_recorded = any(
+        v.system_prompt == system_prompt for v in store.get_system_prompt_versions(agent_spec_name)
+    )
+    if not already_recorded:
+        store.save_system_prompt_version(
+            SystemPromptVersion(agent_spec_name=agent_spec_name, system_prompt=system_prompt)
+        )
+
+
+def _prompt_version_history(
+    current_system_prompt: str, prompt_versions: list[SystemPromptVersion]
+) -> list[dict]:
+    """One row per distinct version ever recorded for this agent
+    (most-recent-created first), each diffed against whichever version came
+    immediately before it in time — the oldest entry is the prompt as it
+    stood before any fix was ever applied, shown as-is with no diff. Because
+    the version list is content-addressed (see ``_record_prompt_version``),
+    every row — including ones already superseded and then brought back —
+    is restorable via the same action, and "current" is whichever row's text
+    matches what's live right now, not necessarily the newest row.
+    """
+    rows = []
+    total = len(prompt_versions)
+    for i, version in enumerate(prompt_versions):
+        predecessor = prompt_versions[i + 1] if i + 1 < total else None
+        rows.append(
+            {
+                "version": version,
+                "ordinal": total - i,
+                "is_current": version.system_prompt == current_system_prompt,
+                "diff_blocks": (
+                    _diff_blocks(predecessor.system_prompt, version.system_prompt)
+                    if predecessor is not None
+                    else None
+                ),
+            }
+        )
+    return rows
 
 
 def _worst_severity(cluster: Cluster, verdicts: list[Verdict]) -> str:
@@ -249,7 +396,8 @@ def _run_events(run_id: str, db_path: str) -> Iterator[str]:
             yield _sse("status", html)
         if status in ("completed", "failed"):
             with SqliteStore(db_path) as store:
-                _run, final_tree, final_verdicts, final_clusters = _load_bundle(store, run_id)
+                final_run, final_tree, final_verdicts, final_clusters = _load_bundle(store, run_id)
+                locked = _locked_cluster_ids(store, final_run.agent_spec.name)
             reliability = score_run(final_tree.nodes(), final_verdicts)
             ranked = _ranked_clusters(final_clusters, final_verdicts)
             yield _sse(
@@ -261,7 +409,10 @@ def _run_events(run_id: str, db_path: str) -> Iterator[str]:
             yield _sse(
                 "clusters",
                 templates.get_template("fragments/cluster_table.html").render(
-                    ranked_clusters=ranked
+                    ranked_clusters=ranked,
+                    run_id=run_id,
+                    run_provider=final_run.provider,
+                    locked_cluster_ids=locked,
                 ),
             )
             # Representative Transcripts is a top-level block, not swapped by
@@ -389,14 +540,19 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                 run, tree, verdicts, clusters = _load_bundle(store, run_id)
                 reliability = score_run(tree.nodes(), verdicts)
 
+            locked = _locked_cluster_ids(store, run.agent_spec.name)
+
         failures: list[Verdict] = [v for v in verdicts if not v.passed]
         return templates.TemplateResponse(
             request,
             "run.html",
             {
                 "run": run,
+                "run_id": run_id,
+                "run_provider": run.provider,
                 "reliability": reliability,
                 "ranked_clusters": _ranked_clusters(clusters, verdicts),
+                "locked_cluster_ids": locked,
                 "failures": failures,
                 "tree": tree,
             },
@@ -409,6 +565,173 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                 raise HTTPException(status_code=404, detail=f"No run found with id '{run_id}'.")
         return StreamingResponse(
             _run_events(run_id, app.state.db_path), media_type="text/event-stream"
+        )
+
+    @app.post("/runs/{run_id}/clusters/{cluster_id}/lock", response_class=HTMLResponse)
+    def post_lock_cluster(request: Request, run_id: str, cluster_id: str) -> HTMLResponse:
+        with SqliteStore(app.state.db_path) as store:
+            run, tree, verdicts, clusters = _load_bundle(store, run_id)
+            for case in promote_clusters_to_cases(run, tree, clusters, cluster_ids={cluster_id}):
+                store.save_regression_case(case)
+            locked = _locked_cluster_ids(store, run.agent_spec.name)
+
+        return templates.TemplateResponse(
+            request,
+            "fragments/cluster_table.html",
+            {
+                "ranked_clusters": _ranked_clusters(clusters, verdicts),
+                "run_id": run_id,
+                "run_provider": run.provider,
+                "locked_cluster_ids": locked,
+            },
+        )
+
+    @app.post("/runs/{run_id}/clusters/{cluster_id}/suggest-fix", response_class=HTMLResponse)
+    def post_suggest_fix(
+        request: Request, run_id: str, cluster_id: str, provider: str = Form("fake")
+    ) -> HTMLResponse:
+        load_settings()
+        with SqliteStore(app.state.db_path) as store:
+            run, tree, _verdicts, clusters = _load_bundle(store, run_id)
+        cluster = next((c for c in clusters if c.id == cluster_id), None)
+        if cluster is None or cluster.representative_node_id is None:
+            raise HTTPException(
+                status_code=404, detail=f"Cluster '{cluster_id}' has no representative node."
+            )
+        node = tree.get(cluster.representative_node_id)
+        failing = [v for v in tree.verdicts(cluster.representative_node_id) if not v.passed]
+        if not failing:
+            raise HTTPException(
+                status_code=404, detail="Representative node has no failing verdict."
+            )
+        verdict = failing[0]
+        rule = next((r for r in run.agent_spec.rules if r.id == verdict.rule_id), None)
+        if rule is None:
+            raise HTTPException(status_code=404, detail=f"Rule '{verdict.rule_id}' not found.")
+
+        suggestion = RemediationSuggester(_build_provider(provider)).suggest(
+            run.agent_spec, rule, node.target_reply, verdict.reason
+        )
+        return templates.TemplateResponse(
+            request,
+            "fragments/suggestion_panel.html",
+            {
+                "rule": rule,
+                "suggestion": suggestion,
+                "agent_spec_name": run.agent_spec.name,
+                "old_system_prompt": run.agent_spec.system_prompt,
+                "diff_blocks": _diff_blocks(run.agent_spec.system_prompt, suggestion.suggested_system_prompt),
+            },
+        )
+
+    @app.post("/agent-specs/{agent_spec_name}/system-prompt/apply", response_class=HTMLResponse)
+    def post_apply_system_prompt(
+        request: Request, agent_spec_name: str, suggested_system_prompt: str = Form(...)
+    ) -> HTMLResponse:
+        try:
+            path = _find_agent_spec_path_by_name(agent_spec_name)
+            previous_prompt = load_agent_spec(path).system_prompt
+            new_spec = apply_system_prompt(path, suggested_system_prompt)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Record both ends of this write as distinct versions (content-
+        # addressed — see `_record_prompt_version`). The first-ever apply for
+        # an agent captures its original prompt as the baseline "Revision 1"
+        # in the same stroke; every later apply is a no-op on whichever side
+        # is already on file. A hosted deployment may give the person
+        # clicking this button no shell/git access to the server, so "git
+        # checkout" isn't a real safety net there — this is what actually
+        # lets them restore any past version, regardless of how it's
+        # deployed, including reapplying one they just undid.
+        with SqliteStore(app.state.db_path) as store:
+            _record_prompt_version(store, agent_spec_name, previous_prompt)
+            _record_prompt_version(store, agent_spec_name, new_spec.system_prompt)
+
+        if not request.headers.get("hx-request"):
+            # A plain (non-htmx) form post — the "Revert to this version"
+            # button on the regression page. Redirect rather than render a
+            # fragment: this is a full navigation, and redirecting means a
+            # page refresh afterward re-GETs instead of re-submitting the
+            # write, and the corpus page re-renders the history fresh from
+            # the store instead of an in-memory snapshot from before it.
+            return RedirectResponse(
+                url=f"/agent-specs/{agent_spec_name}/regression", status_code=303
+            )
+
+        return templates.TemplateResponse(
+            request,
+            "fragments/applied_fix.html",
+            {
+                "agent_spec_filename": path.name,
+                "agent_spec_name": agent_spec_name,
+                "new_system_prompt": new_spec.system_prompt,
+            },
+        )
+
+    @app.get("/agent-specs/{agent_spec_name}/regression", response_class=HTMLResponse)
+    def get_regression(request: Request, agent_spec_name: str) -> HTMLResponse:
+        try:
+            spec = _find_agent_spec_by_name(agent_spec_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        with SqliteStore(app.state.db_path) as store:
+            cases = store.get_regression_cases(spec.name)
+            prompt_versions = store.get_system_prompt_versions(spec.name)
+        return templates.TemplateResponse(
+            request,
+            "regression.html",
+            {
+                "agent_spec_name": spec.name,
+                "cases": cases,
+                "results": {},
+                "models": list_models(),
+                "prompt_history": _prompt_version_history(spec.system_prompt, prompt_versions),
+            },
+        )
+
+    @app.post("/agent-specs/{agent_spec_name}/regression/run", response_class=HTMLResponse)
+    def post_run_regression(
+        request: Request,
+        agent_spec_name: str,
+        provider: str = Form("fake"),
+        target_url: str = Form(""),
+    ) -> HTMLResponse:
+        load_settings()
+        try:
+            spec = _find_agent_spec_by_name(agent_spec_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        with SqliteStore(app.state.db_path) as store:
+            cases = store.get_regression_cases(spec.name)
+
+        results = {}
+        if cases:
+            llm = _build_provider(provider)
+            target = _build_target(SimpleNamespace(target_url=target_url or None), spec, llm)
+            judge = build_two_tier_judge(spec, llm)
+            results = {
+                result.case_id: result
+                for result in RegressionRunner(target, judge).replay_all(cases)
+            }
+
+        return templates.TemplateResponse(
+            request, "fragments/regression_table.html", {"cases": cases, "results": results}
+        )
+
+    @app.post("/regression-cases/{case_id}/resolve", response_class=HTMLResponse)
+    def post_resolve_case(request: Request, case_id: str) -> HTMLResponse:
+        with SqliteStore(app.state.db_path) as store:
+            case = store.get_regression_case(case_id)
+            if case is None:
+                raise HTTPException(status_code=404, detail=f"No regression case '{case_id}'.")
+            resolved = case.model_copy(update={"status": "resolved"})
+            store.save_regression_case(resolved)
+
+        return templates.TemplateResponse(
+            request, "fragments/regression_row.html", {"case": resolved, "result": None}
         )
 
     return app

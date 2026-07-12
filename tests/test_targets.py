@@ -113,6 +113,58 @@ def test_sample_agent_returns_populated_trace_on_react_formatted_completion():
     ]
 
 
+def test_sample_agent_recognizes_markdown_bold_final_answer_label():
+    # Real models (Claude Haiku included) routinely bold section labels —
+    # matching only the bare "Final Answer:" prefix misses this entirely and
+    # falls back to treating the whole completion, reasoning included, as
+    # the reply.
+    react_completion = (
+        "Thought: Let me check that.\n"
+        "**Final Answer:** Your order shipped yesterday and is on its way."
+    )
+    llm = FakeLLMProvider(responses=[react_completion])
+    agent = SampleAgent(make_agent_spec(), llm)
+
+    response = agent.respond([Message(role="user", content="Where is my order?")])
+
+    assert response.final_reply == "Your order shipped yesterday and is on its way."
+    assert response.trace == [Step(thought="Let me check that.")]
+
+
+def test_sample_agent_captures_a_multi_paragraph_final_answer():
+    # Models write the label on its own line, then the reply as several
+    # paragraphs below it — the old parser only ever captured the rest of
+    # the SAME line as the label, silently dropping everything after it.
+    react_completion = (
+        "Thought: The customer wants several things.\n"
+        "\n"
+        "**Final Answer:**\n"
+        "\n"
+        "I understand your frustration.\n"
+        "\n"
+        "Here's what I can do:\n"
+        "- Look up one order at a time\n"
+        "- Start a return once I have the order ID\n"
+        "\n"
+        "What's your order number?"
+    )
+    llm = FakeLLMProvider(responses=[react_completion])
+    agent = SampleAgent(make_agent_spec(), llm)
+
+    response = agent.respond([Message(role="user", content="Help with several orders")])
+
+    assert response.final_reply == (
+        "I understand your frustration.\n"
+        "\n"
+        "Here's what I can do:\n"
+        "- Look up one order at a time\n"
+        "- Start a return once I have the order ID\n"
+        "\n"
+        "What's your order number?"
+    )
+    assert response.trace == [Step(thought="The customer wants several things.")]
+
+
 # --- PythonFunctionAgent -------------------------------------------------
 
 

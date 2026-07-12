@@ -7,6 +7,7 @@
         <th class="field-label text-center px-4 py-3">Severity</th>
         <th class="field-label text-right px-4 py-3">Members</th>
         <th class="field-label text-left px-4 py-3">Representative Node</th>
+        {% if run_id %}<th class="field-label text-right px-4 py-3"></th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -22,6 +23,23 @@
         <td class="px-4 py-3 font-mono text-xs text-[var(--ink-faint)]">
           {{ entry.cluster.representative_node_id or "—" }}
         </td>
+        {% if run_id %}
+        <td class="px-4 py-3 text-right whitespace-nowrap">
+          {% if entry.cluster.id in (locked_cluster_ids or []) %}
+          <span class="tag tag-pass">locked</span>
+          {% else %}
+          <button type="button" hx-post="/runs/{{ run_id }}/clusters/{{ entry.cluster.id }}/lock"
+                  hx-target="#cluster-table" hx-swap="innerHTML" class="btn-ghost text-xs">
+            Lock
+          </button>
+          {% endif %}
+          <button type="button" hx-post="/runs/{{ run_id }}/clusters/{{ entry.cluster.id }}/suggest-fix"
+                  hx-vals='{"provider": "{{ run_provider }}"}'
+                  hx-target="#suggestion-panel" hx-swap="innerHTML" class="btn-ghost text-xs ml-2">
+            Suggest Fix
+          </button>
+        </td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>

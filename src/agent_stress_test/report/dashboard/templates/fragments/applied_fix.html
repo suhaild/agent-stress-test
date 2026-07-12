@@ -1,0 +1,13 @@
+<div class="panel p-5 space-y-2" style="border-color: var(--pass);">
+  <p class="tag tag-pass">applied</p>
+  <p class="text-sm text-[var(--ink)]">
+    Written to <code class="font-mono text-xs">config/agents/{{ agent_spec_filename }}</code>.
+    The previous prompt was saved automatically —
+    <a href="/agent-specs/{{ agent_spec_name | urlencode }}/regression"
+       class="text-[var(--accent)] hover:underline">revert it from the regression corpus page</a>
+    any time.
+  </p>
+  <p class="font-mono text-[.68rem] text-[var(--ink-faint)]">
+    New runs against this agent will use the updated prompt immediately — no restart needed.
+  </p>
+</div>

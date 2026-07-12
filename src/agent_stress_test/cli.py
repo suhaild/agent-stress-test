@@ -22,9 +22,20 @@ from agent_stress_test.composition import (
     cluster_and_persist,
 )
 from agent_stress_test.config import load_agent_spec, load_settings
+from agent_stress_test.orchestration.regression import (
+    RegressionRunner,
+    promote_clusters_to_cases,
+)
 from agent_stress_test.orchestration.reliability import score_run
 from agent_stress_test.orchestration.runner import build_runner
-from agent_stress_test.report.terminal import render_full_report, render_replay
+from agent_stress_test.reasoning.judge import build_two_tier_judge
+from agent_stress_test.reasoning.remediation import RemediationSuggester
+from agent_stress_test.report.terminal import (
+    render_full_report,
+    render_regression_report,
+    render_remediation_suggestion,
+    render_replay,
+)
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 _DEFAULT_AGENT_SPEC = (
@@ -109,6 +120,86 @@ def _cmd_replay(args: argparse.Namespace, console: Console) -> int:
     return 0
 
 
+def _cmd_lock(args: argparse.Namespace, console: Console) -> int:
+    cluster_ids = set(args.cluster.split(",")) if args.cluster else None
+    with SqliteStore(args.db) as store:
+        run, tree, _verdicts, clusters = _load_bundle(store, args.run_id)
+        cases = promote_clusters_to_cases(run, tree, clusters, cluster_ids=cluster_ids)
+        for case in cases:
+            store.save_regression_case(case)
+
+    if not cases:
+        console.print("[dim]No matching failure clusters to lock.[/dim]")
+        return 0
+    for case in cases:
+        console.print(
+            f"Locked case [bold]{case.id}[/bold]: rule={case.rule_id} severity={case.severity}"
+        )
+    return 0
+
+
+def _cmd_resolve(args: argparse.Namespace, console: Console) -> int:
+    with SqliteStore(args.db) as store:
+        case = store.get_regression_case(args.case_id)
+        if case is None:
+            raise ValueError(f"No regression case found with id '{args.case_id}'.")
+        store.save_regression_case(case.model_copy(update={"status": "resolved"}))
+    console.print(f"Case [bold]{args.case_id}[/bold] marked resolved.")
+    return 0
+
+
+def _cmd_suggest_fix(args: argparse.Namespace, console: Console) -> int:
+    load_settings()
+    with SqliteStore(args.db) as store:
+        run, tree, _verdicts, clusters = _load_bundle(store, args.run_id)
+        cluster = next((c for c in clusters if c.id == args.cluster), None)
+        if cluster is None:
+            raise ValueError(f"No cluster '{args.cluster}' found on run '{args.run_id}'.")
+        rep_id = cluster.representative_node_id
+        if rep_id is None:
+            raise ValueError(f"Cluster '{args.cluster}' has no representative node.")
+        node = tree.get(rep_id)
+        failing = [v for v in tree.verdicts(rep_id) if not v.passed]
+        if not failing:
+            raise ValueError(f"Representative node for cluster '{args.cluster}' has no failing verdict.")
+        verdict = failing[0]
+        rule = next((r for r in run.agent_spec.rules if r.id == verdict.rule_id), None)
+        if rule is None:
+            raise ValueError(f"Rule '{verdict.rule_id}' not found on the run's AgentSpec.")
+
+    suggestion = RemediationSuggester(_build_provider(args.provider)).suggest(
+        run.agent_spec, rule, node.target_reply, verdict.reason
+    )
+    render_remediation_suggestion(
+        console, rule=rule, old_system_prompt=run.agent_spec.system_prompt, suggestion=suggestion
+    )
+    return 0
+
+
+def _cmd_regress(args: argparse.Namespace, console: Console) -> int:
+    load_settings()
+    spec = load_agent_spec(args.agent_spec)
+    llm = _build_provider(args.provider)
+    target = _build_target(args, spec, llm)
+    judge = build_two_tier_judge(spec, llm)
+
+    with SqliteStore(args.db) as store:
+        cases = store.get_regression_cases(spec.name)
+
+    if not cases:
+        console.print("[dim]No regression cases recorded for this agent yet.[/dim]")
+        return 0
+
+    results = RegressionRunner(target, judge).replay_all(cases)
+    render_regression_report(console, cases=cases, results=results)
+
+    results_by_case = {r.case_id: r for r in results}
+    regressed = any(
+        case.status == "resolved" and results_by_case[case.id].still_failing for case in cases
+    )
+    return 1 if regressed else 0
+
+
 def _cmd_serve(args: argparse.Namespace, console: Console) -> int:
     # Imported lazily so `run`/`report`/`replay` never pay for importing
     # FastAPI/uvicorn or building the Jinja2 environment.
@@ -166,6 +257,39 @@ def _build_parser() -> argparse.ArgumentParser:
     replay_parser.add_argument("run_id")
     replay_parser.add_argument("--db", default=_DEFAULT_DB)
     replay_parser.set_defaults(func=_cmd_replay)
+
+    lock_parser = subparsers.add_parser(
+        "lock", help="Promote a run's failure clusters into permanent regression cases."
+    )
+    lock_parser.add_argument("run_id")
+    lock_parser.add_argument(
+        "--cluster", default=None, help="Comma-separated cluster id(s) to lock (default: all)."
+    )
+    lock_parser.add_argument("--db", default=_DEFAULT_DB)
+    lock_parser.set_defaults(func=_cmd_lock)
+
+    resolve_parser = subparsers.add_parser("resolve", help="Mark a regression case as fixed.")
+    resolve_parser.add_argument("case_id")
+    resolve_parser.add_argument("--db", default=_DEFAULT_DB)
+    resolve_parser.set_defaults(func=_cmd_resolve)
+
+    suggest_fix_parser = subparsers.add_parser(
+        "suggest-fix", help="Suggest a system-prompt fix for one cluster's failure."
+    )
+    suggest_fix_parser.add_argument("run_id")
+    suggest_fix_parser.add_argument("--cluster", required=True, help="Cluster id to fix.")
+    suggest_fix_parser.add_argument("--provider", default="fake")
+    suggest_fix_parser.add_argument("--db", default=_DEFAULT_DB)
+    suggest_fix_parser.set_defaults(func=_cmd_suggest_fix)
+
+    regress_parser = subparsers.add_parser(
+        "regress", help="Replay the regression corpus and report status."
+    )
+    regress_parser.add_argument("--agent-spec", type=Path, default=_DEFAULT_AGENT_SPEC)
+    regress_parser.add_argument("--provider", default="fake")
+    regress_parser.add_argument("--target-url", default=None)
+    regress_parser.add_argument("--db", default=_DEFAULT_DB)
+    regress_parser.set_defaults(func=_cmd_regress)
 
     serve_parser = subparsers.add_parser("serve", help="Serve the web dashboard.")
     serve_parser.add_argument("--db", default=_DEFAULT_DB)

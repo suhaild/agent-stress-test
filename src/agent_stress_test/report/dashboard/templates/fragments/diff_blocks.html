@@ -1,0 +1,32 @@
+{#
+  Renders `diff_blocks` (see server.py's `_diff_blocks`): a list of either
+  {"kind": "context", "text": ...} or {"kind": "change", "previous": [...],
+  "suggested": [...]}. Changed text is labeled "Previous"/"Suggested"
+  explicitly rather than left to red/green coloring alone to say which side
+  is which.
+#}
+<div class="rounded-sm p-3 space-y-2" style="background: var(--bg-panel-raised);">
+  {% for block in diff_blocks %}
+    {% if block.kind == "context" %}
+    <div class="flex items-start gap-2 py-1">
+      <span class="tag flex-shrink-0" style="opacity: .55;">unchanged</span>
+      <p class="text-xs" style="color: var(--ink-faint);">{{ block.text }}</p>
+    </div>
+    {% else %}
+    <div class="space-y-2 py-1">
+      {% if block.previous %}
+      <div class="flex items-start gap-2">
+        <span class="tag tag-fail flex-shrink-0">previous</span>
+        <p class="text-sm text-[var(--ink)]">{{ block.previous | join(" ") }}</p>
+      </div>
+      {% endif %}
+      {% if block.suggested %}
+      <div class="flex items-start gap-2">
+        <span class="tag tag-pass flex-shrink-0">suggested</span>
+        <p class="text-sm text-[var(--ink)]">{{ block.suggested | join(" ") }}</p>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+  {% endfor %}
+</div>

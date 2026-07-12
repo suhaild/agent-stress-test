@@ -8,15 +8,20 @@ testable (render to a recording console and assert on the text) and keeps the
 hexagonal boundary intact (no ``litellm``, ``httpx``, or ``sqlite3`` here).
 """
 
+import difflib
+
+import pysbd
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from agent_stress_test.models import Cluster, Run, Verdict
+from agent_stress_test.models import Cluster, RegressionCase, Rule, Run, Verdict
 from agent_stress_test.orchestration.reliability import ReliabilityReport
+from agent_stress_test.orchestration.regression import RegressionResult
 from agent_stress_test.orchestration.search import SEVERITY_WEIGHT
 from agent_stress_test.orchestration.tree import ConversationTree
+from agent_stress_test.reasoning.remediation import RemediationSuggestion
 
 _SEVERITY_STYLE = {"critical": "bold red", "major": "yellow", "minor": "cyan"}
 _ROLE_STYLE = {"system": "dim italic", "user": "bold magenta", "assistant": "bold white"}
@@ -161,10 +166,113 @@ def render_replay(
         render_transcript(console, tree, node_id, verdicts)
 
 
+def render_regression_report(
+    console: Console, *, cases: list[RegressionCase], results: list[RegressionResult]
+) -> None:
+    """A status table for every locked-in regression case's latest replay.
+
+    ``status="open"`` cases still failing is expected (a known, not-yet-fixed
+    issue); ``status="resolved"`` cases still (or again) failing is a genuine
+    regression, flagged in red.
+    """
+    if not cases:
+        console.print(Panel("No regression cases recorded for this agent.", border_style="green"))
+        return
+
+    results_by_case = {r.case_id: r for r in results}
+    table = Table(title="Regression Cases", show_lines=False)
+    table.add_column("Rule", style="bold")
+    table.add_column("Tactic")
+    table.add_column("Status", justify="center")
+    table.add_column("Still failing?", justify="center")
+    table.add_column("Reason", overflow="fold")
+
+    for case in cases:
+        result = results_by_case.get(case.id)
+        still_failing = result.still_failing if result is not None else None
+        if still_failing is None:
+            flag_text, flag_style = "?", "dim"
+        elif case.status == "resolved" and still_failing:
+            flag_text, flag_style = "yes (REGRESSION)", "bold red"
+        elif still_failing:
+            flag_text, flag_style = "yes", "yellow"
+        else:
+            flag_text, flag_style = "no", "green"
+        table.add_row(
+            case.rule_id,
+            case.tactic or "-",
+            case.status,
+            Text(flag_text, style=flag_style),
+            result.reason if result is not None else "-",
+        )
+    console.print(table)
+
+
+_SENTENCE_SEGMENTER = pysbd.Segmenter(language="en", clean=False)
+
+
+def _normalize_for_diff(text: str) -> list[str]:
+    """Split text into sentences for diffing, ignoring incidental line-wrap
+    width. A raw line-based diff is misleading here: the YAML's system_prompt
+    is hard-wrapped at a fixed column width, but an LLM's suggested
+    replacement rarely reproduces that exact wrap point — so a plain
+    ``str.splitlines()`` diff shows the whole paragraph as removed-and-re-added
+    even when only one sentence actually changed. Collapsing whitespace first
+    (so wrapping can't matter) and segmenting by sentence gives a diff that
+    tracks meaning, not incidental formatting. Mirrors
+    ``report/dashboard/server.py``'s identical helper.
+    """
+    collapsed = " ".join(text.split())
+    return [s.strip() for s in _SENTENCE_SEGMENTER.segment(collapsed) if s.strip()]
+
+
+def _render_diff(console: Console, old_text: str, new_text: str) -> None:
+    diff_lines = list(
+        difflib.unified_diff(
+            _normalize_for_diff(old_text),
+            _normalize_for_diff(new_text),
+            fromfile="current system_prompt",
+            tofile="suggested system_prompt",
+            lineterm="",
+        )
+    )
+    if not diff_lines:
+        console.print(Text("No textual difference proposed.", style="dim"))
+        return
+    for line in diff_lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            console.print(Text(line, style="green"))
+        elif line.startswith("-") and not line.startswith("---"):
+            console.print(Text(line, style="red"))
+        elif line.startswith("@@"):
+            console.print(Text(line, style="cyan"))
+        else:
+            console.print(Text(line, style="dim"))
+
+
+def render_remediation_suggestion(
+    console: Console, *, rule: Rule, old_system_prompt: str, suggestion: RemediationSuggestion
+) -> None:
+    """The suggested system-prompt fix as a diff, plus rationale and confidence.
+
+    Presentation only — nothing here applies the suggestion; a human pastes
+    it into the AgentSpec YAML themselves if they agree with it.
+    """
+    body = (
+        f"rule: {rule.id} ({rule.severity})\n"
+        f"confidence: {suggestion.confidence:.0%}\n\n"
+        f"rationale: {suggestion.rationale}"
+    )
+    console.print(Panel(body, title="Suggested Fix", border_style="cyan"))
+    _render_diff(console, old_system_prompt, suggestion.suggested_system_prompt)
+
+
 __all__ = [
     "render_reliability",
     "render_clusters",
     "render_transcript",
     "render_full_report",
     "render_replay",
+    "render_regression_report",
+    "render_remediation_suggestion",
 ]
