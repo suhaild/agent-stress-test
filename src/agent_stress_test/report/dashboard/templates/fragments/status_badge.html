@@ -1,0 +1,11 @@
+<div class="flex flex-col items-end gap-1.5">
+  <span data-status="{{ run.status }}"
+        class="tag {% if run.status == 'completed' %}tag-pass{% elif run.status == 'failed' %}tag-fail{% else %}tag-warn is-live{% endif %}">
+    {{ run.status }}
+  </span>
+  {% if run.status == 'failed' and run.error %}
+  <p class="font-mono text-[.68rem] text-right max-w-xs truncate" style="color: var(--fail);" title="{{ run.error }}">
+    {{ run.error }}
+  </p>
+  {% endif %}
+</div>

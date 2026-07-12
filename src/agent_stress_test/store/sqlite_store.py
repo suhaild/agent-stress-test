@@ -87,6 +87,12 @@ class SqliteStore(Store):
         row = self._conn.execute("SELECT data FROM runs WHERE id = ?", (run_id,)).fetchone()
         return Run.model_validate_json(row[0]) if row is not None else None
 
+    def list_runs(self, limit: int = 20) -> list[Run]:
+        rows = self._conn.execute(
+            "SELECT data FROM runs ORDER BY rowid DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [Run.model_validate_json(row[0]) for row in rows]
+
     # --- nodes -----------------------------------------------------------
 
     def save_node(self, node: Node) -> None:

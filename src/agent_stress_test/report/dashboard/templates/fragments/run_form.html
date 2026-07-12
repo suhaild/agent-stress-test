@@ -1,0 +1,83 @@
+{% macro model_picker(field_name, options, default_value, default_label) %}
+<div x-data="{ open: false, value: '{{ default_value }}', label: '{{ default_label }}' }" @click.outside="open = false" class="relative">
+  <button type="button" @click="open = !open" class="field-input flex items-center justify-between text-left w-full">
+    <span x-text="label" class="truncate"></span>
+    <span class="text-[var(--ink-faint)] ml-2 transition-transform duration-150" :class="{ 'rotate-180': open }">▾</span>
+  </button>
+  <input type="hidden" name="{{ field_name }}" :value="value">
+  <div x-show="open" x-collapse x-cloak class="tactic-panel">
+    {% for opt in options %}
+    <label class="tactic-row" @click="value = '{{ opt.id }}'; label = '{{ opt.label }}'; open = false">
+      <input type="radio" :checked="value === '{{ opt.id }}'" class="mt-0.5 accent-[var(--accent)]">
+      <span class="min-w-0">
+        <span class="field-label block">{{ opt.label }}</span>
+        {% if opt.id %}<span class="field-help block mt-0.5 font-mono">{{ opt.id }}</span>{% endif %}
+      </span>
+    </label>
+    {% endfor %}
+    <label class="tactic-row" style="cursor: auto;">
+      <span class="min-w-0 w-full">
+        <span class="field-label block mb-1">Custom model id</span>
+        <input type="text" placeholder="provider/model-name" class="field-input font-mono text-xs"
+               @click.stop @input="value = $event.target.value; label = $event.target.value || 'Custom model id'">
+      </span>
+    </label>
+  </div>
+</div>
+{% endmacro %}
+<form hx-post="/runs" hx-swap="none" class="panel p-6 space-y-5">
+  <div>
+    <label class="field-label block mb-1">Target Agent</label>
+    <p class="field-help mb-1.5">Which agent's rules and persona the judge checks replies against.</p>
+    <select name="agent_spec_id" class="field-input">
+      {% for spec in agent_specs %}
+      <option value="{{ spec.id }}">{{ spec.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="field-label block mb-1">Target Agent's Endpoint</label>
+    <p class="field-help mb-1.5">Bring your own HTTP endpoint for it — blank uses the bundled demo agent instead.</p>
+    <input type="text" name="target_url" placeholder="e.g. http://localhost:5000/chat" class="field-input font-mono">
+  </div>
+  <div>
+    <label class="field-label block mb-1">Target Agent's Model</label>
+    <p class="field-help mb-1.5">LLM behind the bundled agent (ignored if using your own endpoint above) and the consistency scorer.</p>
+    {{ model_picker('provider', models, 'fake', models[0].label) }}
+  </div>
+  <div>
+    <label class="field-label block mb-1">Adversary's Model</label>
+    <p class="field-help mb-1.5">LLM behind the attacker — blank uses a cheap real model by default.</p>
+    {{ model_picker('sim_provider', [{'id': '', 'label': 'Default — cheap model'}] + models, '', 'Default — cheap model') }}
+  </div>
+  <div class="grid grid-cols-2 gap-x-4 gap-y-1">
+    <label class="field-label">Max Conversation Turns</label>
+    <label class="field-label">Consistency Samples</label>
+    <p class="field-help mb-1.5">How many adversarial turns to attempt.</p>
+    <p class="field-help mb-1.5">Re-ask each turn N× to catch flakiness.</p>
+    <input type="number" name="budget" value="6" min="1" class="field-input">
+    <input type="number" name="sample_n" value="1" min="1" class="field-input">
+  </div>
+  <div x-data="{ open: false, selected: [] }" @click.outside="open = false" class="relative">
+    <label class="field-label block mb-1">Attack Tactics</label>
+    <p class="field-help mb-1.5">Choose which tactics to run — none selected tries them all.</p>
+    <button type="button" @click="open = !open" class="field-input flex items-center justify-between text-left w-full">
+      <span x-text="selected.length ? selected.length + ' selected' : 'All tactics'" class="truncate"></span>
+      <span class="text-[var(--ink-faint)] ml-2 transition-transform duration-150" :class="{ 'rotate-180': open }">▾</span>
+    </button>
+    <input type="hidden" name="tactics" :value="selected.join(',')">
+    <div x-show="open" x-collapse x-cloak class="tactic-panel">
+      {% for tactic in tactics %}
+      <label class="tactic-row">
+        <input type="checkbox" value="{{ tactic.id }}" class="mt-0.5 accent-[var(--accent)]"
+               @change="$event.target.checked ? selected.push('{{ tactic.id }}') : selected = selected.filter(t => t !== '{{ tactic.id }}')">
+        <span class="min-w-0">
+          <span class="field-label block">{{ tactic.id.replace('-', ' ') | title }}</span>
+          <span class="field-help block mt-0.5">{{ tactic.description }}</span>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+  <button type="submit" class="btn-stamp w-full">Start Stress Test →</button>
+</form>

@@ -1,0 +1,16 @@
+<div class="log-line rounded-sm px-4 py-3"
+     style="background: var(--bg-panel); border: 1px solid var(--wire); border-left: 3px solid
+       {% if verdict.severity == 'critical' %}var(--fail){% elif verdict.severity == 'major' %}var(--warn){% else %}var(--pass){% endif %};">
+  <div class="flex items-center justify-between gap-3 mb-1.5">
+    <span class="tag {% if verdict.severity == 'critical' %}tag-fail{% elif verdict.severity == 'major' %}tag-warn{% else %}tag-pass{% endif %}">
+      {{ verdict.severity }}
+    </span>
+    {% if node and node.tactic %}
+    <span class="font-mono text-[.68rem] text-[var(--ink-faint)] uppercase tracking-wide">{{ node.tactic }}</span>
+    {% endif %}
+  </div>
+  <p class="text-sm text-[var(--ink)]">
+    <span class="font-mono text-[var(--ink-dim)]">{{ verdict.rule_id or "—" }}</span>
+    <span class="text-[var(--ink-faint)]">·</span> {{ verdict.reason }}
+  </p>
+</div>

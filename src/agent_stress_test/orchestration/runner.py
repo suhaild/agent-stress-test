@@ -11,6 +11,7 @@ the runner depends only on the abstract ``Store``, never on SQLite.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from agent_stress_test.models import AgentSpec, Message, Run, Verdict
 from agent_stress_test.orchestration.reliability import ReliabilityReport, score_run
@@ -52,15 +53,27 @@ class Runner:
         provider_name: str,
         budget: int,
         seed_messages: list[Message] | None = None,
+        run_id: str | None = None,
+        tree: ConversationTree | None = None,
     ) -> RunResult:
+        """Run one stress test end to end.
+
+        ``run_id``/``tree`` let a caller pre-generate the run's id and hand in a
+        ``ConversationTree`` it already holds a reference to — the search
+        mutates that exact tree in place, so the caller can read live progress
+        (``tree.nodes()``/``tree.all_verdicts()``) from another thread while
+        this call is still running. Both default to ``None``, so every existing
+        caller is unaffected.
+        """
         run = Run(
+            id=run_id if run_id is not None else str(uuid4()),
             agent_spec=self._agent_spec,
             provider=provider_name,
             budget=budget,
             status="running",
             started_at=datetime.now(timezone.utc),
         )
-        tree = ConversationTree(run.id)
+        tree = tree if tree is not None else ConversationTree(run.id)
 
         seed = seed_messages if seed_messages is not None else list(_DEFAULT_SEED)
         result = self._strategy.search(tree, seed, budget=budget)

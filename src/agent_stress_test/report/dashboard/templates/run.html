@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id[:8] }} — Agent Stress-Test{% endblock %}
+{% block content %}
+<div hx-ext="sse" sse-connect="/runs/{{ run.id }}/events">
+
+  <div class="flex flex-wrap items-start justify-between gap-4 mb-8 reveal">
+    <div>
+      <h1 class="brand-mark text-2xl md:text-3xl">{{ run.agent_spec.name }}</h1>
+      <p class="font-mono text-xs text-[var(--ink-faint)] mt-1.5">{{ run.id }} <span class="text-[var(--wire)]">·</span> {{ run.provider }}</p>
+    </div>
+    <div id="status-badge" sse-swap="status" hx-swap="innerHTML">
+      {% include "fragments/status_badge.html" %}
+    </div>
+  </div>
+
+  <section class="mb-10 reveal" style="animation-delay: 60ms">
+    <h2 class="tag-label mb-4">Reliability</h2>
+    <div id="reliability-gauge" sse-swap="reliability" hx-swap="innerHTML">
+      {% include "fragments/reliability_gauge.html" %}
+    </div>
+  </section>
+
+  <section class="mb-10 reveal" style="animation-delay: 120ms">
+    <h2 class="tag-label mb-4">Failure Clusters</h2>
+    <div id="cluster-table" sse-swap="clusters" hx-swap="innerHTML">
+      {% include "fragments/cluster_table.html" %}
+    </div>
+  </section>
+
+  <div id="transcripts-section" sse-swap="transcripts" hx-swap="innerHTML">
+    {% include "fragments/transcripts_section.html" %}
+  </div>
+
+  <section class="reveal" style="animation-delay: 180ms">
+    <h2 class="tag-label mb-4">Live Failure Feed</h2>
+    {% set feed_visible = 5 %}
+    <div id="failure-feed" sse-swap="failure" hx-swap="beforeend" class="space-y-3" x-data="{ expanded: false }">
+      {% if failures | length > feed_visible %}
+      <div x-show="expanded" x-collapse class="space-y-3 mb-3">
+        {% for verdict in failures[:-feed_visible] %}
+          {% set node = tree.get(verdict.node_id) %}
+          {% include "fragments/failure_row.html" %}
+        {% endfor %}
+      </div>
+      <button type="button" @click="expanded = !expanded" class="btn-ghost mb-3"
+              x-text="expanded ? 'Show fewer' : 'Show {{ failures | length - feed_visible }} earlier'"></button>
+      {% endif %}
+      {% for verdict in failures[-feed_visible:] %}
+        {% set node = tree.get(verdict.node_id) %}
+        {% include "fragments/failure_row.html" %}
+      {% endfor %}
+      {% if not failures %}
+      <p id="no-failures" class="text-sm text-[var(--ink-dim)]">No failures yet.</p>
+      {% endif %}
+    </div>
+  </section>
+
+</div>
+{% endblock %}

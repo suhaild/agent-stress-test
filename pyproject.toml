@@ -15,6 +15,10 @@ dependencies = [
     "pyyaml",
     "python-dotenv",
     "httpx",
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "python-multipart",
 ]
 
 [project.optional-dependencies]

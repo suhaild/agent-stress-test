@@ -52,7 +52,7 @@ Name components by their pattern so the codebase stays legible. These describe w
 - **Adapter** — provider/target/store implementations.
 - **Strategy** — interchangeable algorithms behind one interface: simulator tactics, and the search engine (greedy now, MCTS later).
 - **Repository** — the `Store` port over runs/nodes/verdicts/clusters.
-- **Composition Root / Dependency Injection** — all wiring happens in one place (`runner.py` / `cli.py`); the core never constructs its own dependencies.
+- **Composition Root / Dependency Injection** — all wiring happens in one place (`runner.py` / `cli.py`, and `report/dashboard/server.py` for the Phase 10 dashboard); the core never constructs its own dependencies.
 
 **AI / agentic patterns**
 - **Orchestrator-Workers** — the runner coordinates specialized workers (simulator, scorer, judge, clusterer).
@@ -71,6 +71,7 @@ Name components by their pattern so the codebase stays legible. These describe w
 - `pytest` — testing (with mocking; `pytest-asyncio` only if async is actually used).
 - `rich` / `textual` — the terminal report.
 - An `Embedder` port + a built-in deterministic hashing embedder (token-overlap → cosine, offline, no model download) + pure-Python agglomerative clustering — failure clustering. Zero new dependencies, fully offline. A real semantic embedder (e.g. sentence-transformers) can slot in behind the same port later — see the build plan's Judge Enhancement Ideas section.
+- **Phase 10 only:** `fastapi` + `uvicorn` behind `report/dashboard/server.py` — the local API adapter that lets the dashboard trigger and monitor runs (it wires the same `build_runner()` as `cli.py`, no new business logic). Frontend: `htmx` + `alpinejs` + `tailwindcss`, all CDN-loaded into server-rendered templates — no Node/npm build pipeline. See the build plan's Phase 10 section for the exact shape.
 
 **Do NOT use (deliberate choices):**
 - No LangChain, LlamaIndex, or any agent framework — they bury the clean architecture.
@@ -141,7 +142,7 @@ agent-stress-test/
       sqlite_store.py       # Store implementation
     report/
       terminal.py           # CLI/terminal report
-      dashboard/            # (Phase 10) web dashboard
+      dashboard/            # (Phase 10) web dashboard: server.py (API adapter, triggers/monitors runs) + htmx/Alpine/Tailwind templates
     cli.py                  # command-line entry point
   tests/
     ...                     # one test module per phase
@@ -162,7 +163,7 @@ Note: `src/ast/` is the package. If `ast` clashes with Python's standard-library
 7. **Persistence + reliability score** — SQLite store + compounding score.
 8. **LLM-as-judge (tier 2) + failure clustering.**
 9. **Terminal report + CLI** — first shippable product.
-10. **Visual dashboard** — built last, on representative pre-run results.
+10. **Visual dashboard** — built last; presents representative pre-run results, and also lets you trigger and monitor new runs from the browser.
 11. **MCTS search (stretch)** — only if 1-10 are green with time to spare.
 
 At the start of each phase: state which phase, what it delivers, and its tests. At the end: confirm the pytest suite passes before moving on.

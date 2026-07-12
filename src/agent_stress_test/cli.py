@@ -12,107 +12,25 @@ from pathlib import Path
 
 from rich.console import Console
 
+from agent_stress_test.composition import (
+    _DEFAULT_SIM_MODEL,  # noqa: F401 (re-exported: tests import this from cli)
+    _build_provider,
+    _build_target,
+    _load_bundle,
+    _resolve_sim_provider_name,
+    _resolve_tactics,
+    cluster_and_persist,
+)
 from agent_stress_test.config import load_agent_spec, load_settings
-from agent_stress_test.models import Cluster, Node, Run, Verdict
 from agent_stress_test.orchestration.reliability import score_run
 from agent_stress_test.orchestration.runner import build_runner
-from agent_stress_test.orchestration.tree import ConversationTree
-from agent_stress_test.ports import LLMProvider, Store, TargetAgent
-from agent_stress_test.providers.embedder import HashingEmbedder
-from agent_stress_test.providers.fake import FakeLLMProvider
-from agent_stress_test.providers.litellm_provider import LiteLLMProvider
-from agent_stress_test.reasoning.clusterer import FailureClusterer
-from agent_stress_test.reasoning.simulator import default_registry
 from agent_stress_test.report.terminal import render_full_report, render_replay
 from agent_stress_test.store.sqlite_store import SqliteStore
-from agent_stress_test.targets.http_agent import HttpAgent
-from agent_stress_test.targets.sample_agent import SampleAgent
 
 _DEFAULT_AGENT_SPEC = (
     Path(__file__).resolve().parents[2] / "config" / "agents" / "sample_support.yaml"
 )
 _DEFAULT_DB = "runs.sqlite"
-
-# The simulator only has to write one plausible adversarial customer line, not
-# solve the task under test — a cheap, fast model does that job as well as the
-# target-tier one, at a fraction of the cost. Used only when the run's main
-# provider is a real (non-fake) model and --sim-provider wasn't overridden.
-_DEFAULT_SIM_MODEL = "anthropic/claude-haiku-4-5-20251001"
-
-
-def _build_provider(name: str) -> LLMProvider:
-    if name == "fake":
-        return FakeLLMProvider()
-    return LiteLLMProvider(model=name)
-
-
-def _resolve_sim_provider_name(args: argparse.Namespace) -> str:
-    """The model name to drive the simulator: explicit override, else a cheap
-    default — unless the main provider is "fake", which stays fake so offline
-    runs never silently reach out to a real API."""
-    if args.sim_provider is not None:
-        return args.sim_provider
-    if args.provider == "fake":
-        return "fake"
-    return _DEFAULT_SIM_MODEL
-
-
-def _build_target(args: argparse.Namespace, spec, llm: LLMProvider) -> TargetAgent:
-    if args.target_url:
-        return HttpAgent(args.target_url)
-    return SampleAgent(spec, llm)
-
-
-def _rebuild_tree(run_id: str, nodes: list[Node], verdicts: list[Verdict]) -> ConversationTree:
-    """Rebuild a ConversationTree from flat, order-independent storage rows."""
-    tree = ConversationTree(run_id)
-    remaining = list(nodes)
-    while remaining:
-        added_any = False
-        still_remaining = []
-        for node in remaining:
-            if node.parent_id is None or node.parent_id in {n.id for n in tree.nodes()}:
-                tree.add(node)
-                added_any = True
-            else:
-                still_remaining.append(node)
-        if not added_any:
-            raise ValueError("Cannot rebuild tree: orphaned node(s) with unknown parent.")
-        remaining = still_remaining
-
-    verdicts_by_node: dict[str, list[Verdict]] = {}
-    for verdict in verdicts:
-        verdicts_by_node.setdefault(verdict.node_id, []).append(verdict)
-    for node_id, node_verdicts in verdicts_by_node.items():
-        tree.attach_verdicts(node_id, node_verdicts)
-    return tree
-
-
-def _load_bundle(
-    store: Store, run_id: str
-) -> tuple[Run, ConversationTree, list[Verdict], list[Cluster]]:
-    run = store.get_run(run_id)
-    if run is None:
-        raise ValueError(f"No run found with id '{run_id}'.")
-    nodes = store.get_nodes(run_id)
-    verdicts = store.get_verdicts(run_id)
-    clusters = store.get_clusters(run_id)
-    tree = _rebuild_tree(run_id, nodes, verdicts)
-    return run, tree, verdicts, clusters
-
-
-def _resolve_tactics(spec_arg: str | None) -> list[str]:
-    """A validated tactic subset from a comma-separated arg (default: all)."""
-    available = default_registry().names()
-    if not spec_arg:
-        return available
-    chosen = [name.strip() for name in spec_arg.split(",") if name.strip()]
-    unknown = [name for name in chosen if name not in available]
-    if unknown:
-        raise ValueError(
-            f"Unknown tactic(s): {', '.join(unknown)}. Available: {', '.join(available)}"
-        )
-    return chosen
 
 
 def _cmd_run(args: argparse.Namespace, console: Console) -> int:
@@ -159,12 +77,7 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
         with console.status("[bold]Stress-testing agent...[/bold]", spinner="dots"):
             result = runner.run(provider_name=args.provider, budget=budget)
 
-        clusterer = FailureClusterer(HashingEmbedder())
-        clusters = clusterer.cluster(
-            result.tree.nodes(), result.tree.all_verdicts(), run_id=result.run.id
-        )
-        for cluster in clusters:
-            store.save_cluster(cluster)
+        clusters = cluster_and_persist(result, store)
 
         console.print(f"Run ID: {result.run.id}")
         render_full_report(
@@ -193,6 +106,21 @@ def _cmd_replay(args: argparse.Namespace, console: Console) -> int:
         _run, tree, verdicts, _clusters = _load_bundle(store, args.run_id)
         node_ids = [v.node_id for v in tree.failures()]
         render_replay(console, tree=tree, node_ids=node_ids, verdicts=verdicts)
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace, console: Console) -> int:
+    # Imported lazily so `run`/`report`/`replay` never pay for importing
+    # FastAPI/uvicorn or building the Jinja2 environment.
+    import uvicorn
+
+    from agent_stress_test.report.dashboard.server import create_app
+
+    console.print(
+        f"[dim]Serving dashboard at [bold]http://{args.host}:{args.port}[/bold] "
+        f"(db={args.db}).[/dim]"
+    )
+    uvicorn.run(create_app(db_path=args.db), host=args.host, port=args.port)
     return 0
 
 
@@ -238,6 +166,12 @@ def _build_parser() -> argparse.ArgumentParser:
     replay_parser.add_argument("run_id")
     replay_parser.add_argument("--db", default=_DEFAULT_DB)
     replay_parser.set_defaults(func=_cmd_replay)
+
+    serve_parser = subparsers.add_parser("serve", help="Serve the web dashboard.")
+    serve_parser.add_argument("--db", default=_DEFAULT_DB)
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.set_defaults(func=_cmd_serve)
 
     return parser
 

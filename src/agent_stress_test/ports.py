@@ -44,6 +44,9 @@ class Store(ABC):
     def get_run(self, run_id: str) -> Run | None: ...
 
     @abstractmethod
+    def list_runs(self, limit: int = 20) -> list[Run]: ...
+
+    @abstractmethod
     def save_node(self, node: Node) -> None: ...
 
     @abstractmethod

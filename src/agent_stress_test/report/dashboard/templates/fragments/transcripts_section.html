@@ -1,0 +1,29 @@
+{% set transcript_entries = ranked_clusters | selectattr("cluster.representative_node_id") | list if ranked_clusters else [] %}
+{% if transcript_entries %}
+{% set transcript_visible = 3 %}
+<section class="mb-10" x-data="{ expanded: false }">
+  <h2 class="tag-label mb-4">Representative Transcripts</h2>
+  <div class="space-y-4">
+    {% for entry in transcript_entries[:transcript_visible] %}
+    <div>
+      <p class="font-mono text-xs text-[var(--ink-faint)] mb-1.5 uppercase tracking-wide">{{ entry.cluster.label }}</p>
+      {% set node_id = entry.cluster.representative_node_id %}
+      {% include "fragments/transcript.html" %}
+    </div>
+    {% endfor %}
+  </div>
+  {% if transcript_entries | length > transcript_visible %}
+  <div x-show="expanded" x-collapse class="space-y-4 mt-4">
+    {% for entry in transcript_entries[transcript_visible:] %}
+    <div>
+      <p class="font-mono text-xs text-[var(--ink-faint)] mb-1.5 uppercase tracking-wide">{{ entry.cluster.label }}</p>
+      {% set node_id = entry.cluster.representative_node_id %}
+      {% include "fragments/transcript.html" %}
+    </div>
+    {% endfor %}
+  </div>
+  <button type="button" @click="expanded = !expanded" class="btn-ghost mt-4"
+          x-text="expanded ? 'Show fewer' : 'Show {{ transcript_entries | length - transcript_visible }} more'"></button>
+  {% endif %}
+</section>
+{% endif %}

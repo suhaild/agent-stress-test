@@ -1,0 +1,33 @@
+{% if reliability %}
+{% set pct = reliability.score * 100 %}
+{% set pct_rounded = pct | round(0, 'floor') | int %}
+{% set dial_color = 'var(--pass)' if reliability.score >= 0.7 else ('var(--warn)' if reliability.score >= 0.4 else 'var(--fail)') %}
+<div class="panel p-6 flex flex-col sm:flex-row items-center gap-6">
+  <div class="dial" id="reliability-dial" style="--dial-color: {{ dial_color }}; --pct: 0;">
+    <div class="dial-face">
+      <span class="dial-value" style="color: {{ dial_color }};">{{ pct_rounded }}%</span>
+      <span class="dial-caption">Reliability</span>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var el = document.currentScript.previousElementSibling;
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () { el.style.setProperty('--pct', {{ pct_rounded }}); });
+      });
+    })();
+  </script>
+  <div class="flex-1 text-sm text-[var(--ink-dim)] space-y-1.5">
+    <p>
+      <span class="text-[var(--ink)] font-mono">{{ reliability.failing_steps }} / {{ reliability.total_steps }}</span>
+      steps failed
+    </p>
+    <p>
+      {{ "%.0f"|format(reliability.per_step_failure_rate * 100) }}% per-step failure rate,
+      compounded over ~{{ "%.1f"|format(reliability.conversation_depth) }} turns
+    </p>
+  </div>
+</div>
+{% else %}
+<div class="panel p-6 text-sm text-[var(--ink-dim)]">No results yet.</div>
+{% endif %}

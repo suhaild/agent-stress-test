@@ -96,6 +96,7 @@ class Run(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     final_score: float | None = None
+    error: str | None = None
 
 
 class Node(BaseModel):

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Agent Stress-Test — Dashboard{% endblock %}
+{% block content %}
+<div class="grid gap-10 md:grid-cols-2 items-start">
+  <section class="reveal" style="animation-delay: 40ms">
+    <h2 class="tag-label mb-4">New Run</h2>
+    {% include "fragments/run_form.html" %}
+  </section>
+  <section class="reveal" style="animation-delay: 140ms">
+    <h2 class="tag-label mb-4">Recent Runs</h2>
+    {% if recent_runs %}
+    <ul class="panel overflow-hidden">
+      {% for run in recent_runs %}
+      <li{% if not loop.first %} style="border-top: 1px solid var(--wire);"{% endif %}>
+        <a href="/runs/{{ run.id }}"
+           class="flex items-center gap-4 px-5 py-4 hover:bg-[var(--bg-panel-raised)] transition-colors group">
+          <span class="font-mono text-xs text-[var(--ink-faint)] group-hover:text-[var(--accent)] transition-colors">{{ run.id[:8] }}</span>
+          <span class="text-sm text-[var(--ink)] truncate flex-1">
+            {{ run.agent_spec.name }} <span class="text-[var(--ink-dim)]">· {{ run.provider }}</span>
+          </span>
+          <span class="tag {% if run.status == 'completed' %}tag-pass{% elif run.status == 'failed' %}tag-fail{% else %}tag-warn is-live{% endif %}">
+            {{ run.status }}
+          </span>
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="panel p-6 text-sm text-[var(--ink-dim)]">No runs yet — configure one on the left to begin.</div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
