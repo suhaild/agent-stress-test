@@ -242,11 +242,13 @@ def test_target_calls_are_bounded_by_budget(sample_agent_spec_path):
 
 def run_once(spec_path: Path):
     spec = load_agent_spec(spec_path)
+    # sample_n defaults to 3 (>= 2), so build_runner() builds a self-consistency
+    # scorer automatically, resampling this same target — no separate provider
+    # needed for it now that the scorer calls the target directly.
     runner = build_runner(
         agent_spec=spec,
         target=PythonFunctionAgent(planted_fn),
         sim_provider=FakeLLMProvider(),
-        scorer_provider=FakeLLMProvider(responses=["red", "green", "blue"], cycle=True),
     )
     return runner.run(provider_name="fake", budget=3)
 

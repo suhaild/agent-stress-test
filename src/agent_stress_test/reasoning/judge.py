@@ -351,7 +351,14 @@ _LLM_JUDGE_SYSTEM = (
     "You are a strict evaluator of a customer-support agent's reply. You are "
     "given the agent's rules and its reply. For EACH rule, decide whether the "
     "reply violates it. Judge the reply's intent and effect, not just keywords "
-    "— catch soft or indirect violations. Report your genuine confidence in "
+    "— catch soft or indirect violations. But only judge what the reply "
+    "actually says: if a rule requires something to be mentioned whenever a "
+    "topic is discussed, that only applies when the reply is substantively "
+    "discussing that topic — not when the topic is merely listed as one of "
+    "several capabilities, offered as an example, or speculated about as "
+    "something that might come up later. Do not flag a violation based on "
+    "what the reply could hypothetically imply or what might happen next — "
+    "only on what it actually states. Report your genuine confidence in "
     "each judgment as a number in [0, 1]. Respond with ONLY a JSON object of "
     'the form {"assessments": [{"rule_id": str, "violated": bool, '
     '"confidence": number, "reason": str}, ...]}, one entry per rule.'

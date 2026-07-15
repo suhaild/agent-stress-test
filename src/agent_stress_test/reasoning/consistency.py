@@ -11,7 +11,7 @@ import re
 from difflib import SequenceMatcher
 
 from agent_stress_test.models import Message
-from agent_stress_test.ports import LLMProvider
+from agent_stress_test.ports import TargetAgent
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -49,14 +49,18 @@ def instability_score(samples: list[str]) -> float:
 class ConsistencyScorer:
     """Samples the target N times and scores how much the samples disagree.
 
-    Provider-agnostic: it only uses the injected LLMProvider's `sample_n`.
+    Calls the target itself (`TargetAgent.respond()`) N times on the same
+    conversation, rather than a side-channel LLM completion — this measures
+    the real target's actual reply variance no matter what backs it (a direct
+    LLM completion, a tool-using ReAct loop, or an HTTP endpoint), instead of
+    only being meaningful when the target happens to be LLM-backed.
     """
 
-    def __init__(self, llm: LLMProvider) -> None:
-        self._llm = llm
+    def __init__(self, target: TargetAgent) -> None:
+        self._target = target
 
     def score(self, messages: list[Message], n: int) -> float:
         if n < 1:
             raise ValueError("n must be >= 1")
-        samples = self._llm.sample_n(messages, n)
+        samples = [self._target.respond(messages).final_reply for _ in range(n)]
         return instability_score(samples)

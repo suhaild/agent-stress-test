@@ -31,11 +31,12 @@ def planted_fn(conversation: list[Message]) -> str:
 
 def run_with_store(spec_path: Path, store: SqliteStore):
     spec = load_agent_spec(spec_path)
+    # sample_n defaults to 3 (>= 2), so build_runner() builds a self-consistency
+    # scorer automatically, resampling this same target.
     runner = build_runner(
         agent_spec=spec,
         target=PythonFunctionAgent(planted_fn),
         sim_provider=FakeLLMProvider(),
-        scorer_provider=FakeLLMProvider(responses=["red", "green", "blue"], cycle=True),
         store=store,
     )
     return runner.run(provider_name="fake", budget=3)

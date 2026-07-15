@@ -54,15 +54,15 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
     tactics = _resolve_tactics(args.tactics)
 
     # The simulator's job (write one adversarial customer line) doesn't need
-    # the target-tier model, so it defaults to a cheaper one; the scorer stays
-    # on the target's own model, since it measures *that* model's instability
-    # by resampling it — a different model there would score the wrong thing.
+    # the target-tier model, so it defaults to a cheaper one.
     sim_provider_name = _resolve_sim_provider_name(args)
     sim_llm = llm if sim_provider_name == args.provider else _build_provider(sim_provider_name)
 
     # Self-consistency needs >= 2 samples to detect any disagreement; a single
     # sample can only ever score 0.0, so skip the scorer (and every one of its
-    # calls) entirely below that threshold.
+    # extra target calls) entirely below that threshold. build_runner()
+    # resamples the target itself, so this applies to any target, not just
+    # the bundled SampleAgent.
     use_scorer = sample_n >= 2
     n_tactics = len(tactics)
     nodes = 1 + budget * n_tactics
@@ -80,7 +80,6 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
             agent_spec=spec,
             target=target,
             sim_provider=sim_llm,
-            scorer_provider=llm if use_scorer else None,
             store=store,
             tactics=tactics,
             sample_n=sample_n,

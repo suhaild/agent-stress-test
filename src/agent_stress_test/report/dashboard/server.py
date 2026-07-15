@@ -302,14 +302,12 @@ def _execute_run(
         tactics = _resolve_tactics(tactics_arg)
         sim_provider_name = _resolve_sim_provider_name(args)
         sim_llm = llm if sim_provider_name == provider else _build_provider(sim_provider_name)
-        use_scorer = sample_n >= 2
 
         with SqliteStore(db_path) as store:
             runner = build_runner(
                 agent_spec=spec,
                 target=target,
                 sim_provider=sim_llm,
-                scorer_provider=llm if use_scorer else None,
                 store=store,
                 tactics=tactics,
                 sample_n=sample_n,

@@ -92,9 +92,10 @@ class GreedyBestFirstSearch(SearchStrategy):
     """Expand the highest-priority frontier node until the budget is spent.
 
     The four workers are injected (Dependency Injection); this strategy owns
-    only the loop and never constructs them. ``scorer`` is optional: without it
-    (e.g. non-LLM targets) instability is treated as 0.0 and priority is driven
-    by judge proximity-to-failure alone.
+    only the loop and never constructs them. ``scorer`` is optional — it costs
+    extra target calls per node, so a caller may skip it to save cost/latency
+    regardless of target type; without it instability is treated as 0.0 and
+    priority is driven by judge proximity-to-failure alone.
     """
 
     def __init__(

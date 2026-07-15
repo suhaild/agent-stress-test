@@ -107,7 +107,6 @@ def build_runner(
     agent_spec: AgentSpec,
     target: TargetAgent,
     sim_provider: LLMProvider,
-    scorer_provider: LLMProvider | None = None,
     judge: Judge | None = None,
     store: Store | None = None,
     tactics: list[str] | None = None,
@@ -122,15 +121,17 @@ def build_runner(
     processing a customer's return) get a real judgment instead of an
     ever-more-elaborate regex. Tier 1 still decides first and wins whenever it
     fires; the LLM is only consulted when every deterministic check passes
-    (see ``TwoTierJudge``). ``scorer_provider``, when given, backs the
-    self-consistency scorer (typically the same model that backs an LLM
-    target); omit it for non-LLM targets and instability defaults to 0.0.
+    (see ``TwoTierJudge``). The self-consistency scorer resamples ``target``
+    itself (see ``ConsistencyScorer``), so it's built automatically whenever
+    ``sample_n >= 2`` — a single sample can only ever score 0.0, so there's no
+    point paying for the extra calls below that threshold; a caller wanting to
+    skip the extra cost/latency entirely can just pass ``sample_n=1``.
     ``store``, when given, persists the finished run through the ``Store``
     port.
     """
     simulator = Simulator(sim_provider)
     resolved_judge = judge if judge is not None else build_two_tier_judge(agent_spec, sim_provider)
-    scorer = ConsistencyScorer(scorer_provider) if scorer_provider is not None else None
+    scorer = ConsistencyScorer(target) if sample_n >= 2 else None
     strategy = GreedyBestFirstSearch(
         simulator,
         target,
