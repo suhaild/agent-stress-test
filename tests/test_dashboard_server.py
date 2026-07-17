@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from agent_stress_test.config import load_agent_spec
 from agent_stress_test.models import Cluster, Message, Node, Run, Verdict
 from agent_stress_test.providers.fake import FakeLLMProvider
-from agent_stress_test.report.dashboard.server import _diff_blocks, create_app
+from agent_stress_test.report.dashboard.server import _diff_blocks, create_app, templates
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 _STATUS_RE = re.compile(r'data-status="(\w+)"')
@@ -593,3 +593,25 @@ def test_regression_flow_locks_resolves_and_flags_a_real_regression(tmp_path, sa
     )
     assert regressed_replay.status_code == 200
     assert "REGRESSION" in regressed_replay.text
+
+
+def test_failure_row_severity_tag_markup_is_unchanged_by_the_macro_refactor():
+    """R1: failure_row.html's severity tag now comes from macros.html's
+    severity_tag() instead of a hand-duplicated {% if severity == ... %}
+    block, but must render the exact same markup it always has."""
+    verdict = Verdict(
+        run_id="run-1",
+        node_id="node-1",
+        passed=False,
+        rule_id="no-self-refund",
+        reason="Agent processed a refund itself instead of using initiate_return.",
+        tier="rules",
+        confidence=1.0,
+        severity="critical",
+    )
+
+    rendered = templates.env.get_template("fragments/failure_row.html").render(
+        verdict=verdict, node=None
+    )
+
+    assert re.search(r'<span class="tag tag-fail">\s*critical\s*</span>', rendered)

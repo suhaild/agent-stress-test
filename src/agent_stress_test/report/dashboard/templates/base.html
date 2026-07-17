@@ -393,7 +393,24 @@
   <script>
     document.addEventListener('alpine:init', () => {
       Alpine.store('toasts', []);
+
+      // Shared behavior for the model pickers (single-select, value + label)
+      // and the tactics picker (multi-select) in run_form.html — registered
+      // once here so any future hx-swapped picker can reuse them too.
+      Alpine.data('dropdown', (initial = {}) => ({
+        open: false,
+        value: initial.value,
+        label: initial.label,
+      }));
+      Alpine.data('multiSelect', (initial = {}) => ({
+        open: false,
+        selected: initial.selected || [],
+      }));
     });
+    // Every future hx-swapped widget becomes Alpine-reactive automatically —
+    // initTree only scans the swapped subtree, so nodes htmx didn't touch
+    // (already initialized) are left alone; no double-init.
+    document.body.addEventListener('htmx:afterSettle', e => Alpine.initTree(e.detail.elt));
     function pushToast(message, kind) {
       var toasts = Alpine.store('toasts');
       var last = toasts[toasts.length - 1];

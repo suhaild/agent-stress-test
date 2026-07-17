@@ -1,3 +1,4 @@
+{%- from "macros.html" import severity_tag -%}
 {% if ranked_clusters %}
 <div class="panel overflow-hidden">
   <table class="w-full text-sm">
@@ -15,9 +16,7 @@
       <tr{% if not loop.first %} style="border-top: 1px solid var(--wire);"{% endif %}>
         <td class="px-4 py-3 font-semibold text-[var(--ink)]">{{ entry.cluster.label }}</td>
         <td class="px-4 py-3 text-center">
-          <span class="tag {% if entry.severity == 'critical' %}tag-fail{% elif entry.severity == 'major' %}tag-warn{% else %}tag-pass{% endif %}">
-            {{ entry.severity }}
-          </span>
+{{ severity_tag(entry.severity, indent='          ') }}
         </td>
         <td class="px-4 py-3 text-right font-mono text-[var(--ink-dim)]">{{ entry.cluster.member_node_ids | length }}</td>
         <td class="px-4 py-3 font-mono text-xs text-[var(--ink-faint)]">

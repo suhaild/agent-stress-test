@@ -1,3 +1,4 @@
+{%- from "macros.html" import role_label, verdict_block -%}
 {% set path = tree.path_to_root(node_id) %}
 {% set root_node = path[0] %}
 {% set turns = path[1:] %}
@@ -5,22 +6,19 @@
 {% macro render_turn(node) %}
   {% if node.tactic %}<p class="font-mono text-[.68rem] text-[var(--ink-faint)] italic uppercase">tactic: {{ node.tactic }}</p>{% endif %}
   {% set probe = node.messages[-1] %}
-  <p><span class="font-mono text-xs font-semibold uppercase tracking-wide text-[var(--accent)]">{{ probe.role }}</span>
+  <p>{{ role_label(probe.role) }}
     <span class="text-[var(--ink)]">{{ probe.content }}</span></p>
-  <p><span class="font-mono text-xs font-semibold uppercase tracking-wide text-[var(--ink)]">assistant</span>
+  <p>{{ role_label('assistant') }}
     <span class="text-[var(--ink-dim)]">{{ node.target_reply }}</span></p>
 {% endmacro %}
 <div class="panel p-5 space-y-2.5 text-sm" x-data="{ expanded: false }">
   {% for message in root_node.messages %}
   <p>
-    <span class="font-mono text-xs font-semibold uppercase tracking-wide
-        {% if message.role == 'user' %}text-[var(--accent)]
-        {% elif message.role == 'assistant' %}text-[var(--ink)]
-        {% else %}text-[var(--ink-faint)] italic{% endif %}">{{ message.role }}</span>
+    {{ role_label(message.role) }}
     <span class="text-[var(--ink)]">{{ message.content }}</span>
   </p>
   {% endfor %}
-  <p><span class="font-mono text-xs font-semibold uppercase tracking-wide text-[var(--ink)]">assistant</span>
+  <p>{{ role_label('assistant') }}
     <span class="text-[var(--ink-dim)]">{{ root_node.target_reply }}</span></p>
 
   {% for node in turns[:turns_visible] %}
@@ -38,19 +36,5 @@
   {% endif %}
 
   {% set failing = failures | selectattr("node_id", "equalto", node_id) | list %}
-  {% if failing %}
-    {% set verdict = failing[0] %}
-    <div class="mt-3 rounded-sm p-3" style="
-        border: 1px solid {% if verdict.severity == 'critical' %}var(--fail){% elif verdict.severity == 'major' %}var(--warn){% else %}var(--pass){% endif %};
-        background: {% if verdict.severity == 'critical' %}var(--fail-dim){% elif verdict.severity == 'major' %}var(--warn-dim){% else %}var(--pass-dim){% endif %};">
-      <p class="font-mono text-[.68rem] font-semibold uppercase tracking-wide mb-1">Verdict — {{ verdict.severity }}</p>
-      <p class="font-mono text-[.68rem] text-[var(--ink-dim)]">
-        rule: {{ verdict.rule_id or "—" }} · tier: {{ verdict.tier }}
-        · confidence: {{ "%.0f"|format(verdict.confidence * 100) }}%
-      </p>
-      <p class="text-sm mt-1 text-[var(--ink)]">{{ verdict.reason }}</p>
-    </div>
-  {% else %}
-    <p class="text-sm mt-2" style="color: var(--pass);">No rule violation at this node.</p>
-  {% endif %}
+  {{ verdict_block(failing) }}
 </div>

@@ -11,6 +11,7 @@ rules decide when they fire, the LLM is consulted only when they don't.
 
 import json
 import re
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -41,10 +42,23 @@ def _strip_json_fence(raw: str) -> str:
 # a proximity gap span across unrelated clauses in dash/bullet-heavy
 # real-model output, matching e.g. a word in one sentence against an
 # unrelated word several sentences later just because no literal "." sits
-# between them. pysbd is offline, rule-based, and holds no mutable state
-# after construction, so one module-level instance is safe to share and to
-# call from multiple threads.
-_SENTENCE_SEGMENTER = pysbd.Segmenter(language="en", clean=False)
+# between them.
+#
+# pysbd.Segmenter.segment() sets `self.original_text` on the instance for the
+# duration of each call, so one instance is NOT safe to call concurrently —
+# the search's tactic branches run each node's checks from multiple threads
+# at once, and two overlapping segment() calls can race on that attribute.
+# A thread-local instance (one Segmenter per thread, built lazily and reused)
+# avoids the race without serializing the checks behind a lock.
+_segmenter_local = threading.local()
+
+
+def _sentence_segmenter() -> pysbd.Segmenter:
+    segmenter = getattr(_segmenter_local, "instance", None)
+    if segmenter is None:
+        segmenter = pysbd.Segmenter(language="en", clean=False)
+        _segmenter_local.instance = segmenter
+    return segmenter
 
 
 @dataclass(frozen=True)
@@ -105,7 +119,7 @@ class ForbiddenOutputCheck(RuleCheck):
     proximity gap (``word1[^.]*word2``), and a whole-reply search lets that
     gap span clauses that have nothing to do with each other whenever the
     real text uses a dash, colon, or line break instead of a period between
-    them (see ``_SENTENCE_SEGMENTER``).
+    them (see ``_sentence_segmenter``).
     """
 
     def __init__(
@@ -120,7 +134,7 @@ class ForbiddenOutputCheck(RuleCheck):
         self._description = description
 
     def check(self, response: AgentResponse) -> CheckResult:
-        for sentence in _SENTENCE_SEGMENTER.segment(response.final_reply):
+        for sentence in _sentence_segmenter().segment(response.final_reply):
             for pattern in self._patterns:
                 match = pattern.search(sentence)
                 if match:
@@ -138,7 +152,7 @@ class RequiredDisclaimerCheck(RuleCheck):
     """Fails if a triggering topic appears but a required disclaimer does not.
 
     ``trigger_pattern`` is matched sentence-by-sentence, not against the whole
-    reply, using the same ``_SENTENCE_SEGMENTER`` as ``ForbiddenOutputCheck``
+    reply, using the same ``_sentence_segmenter`` as ``ForbiddenOutputCheck``
     — for the same reason: a plain whole-reply search lets a trigger word in
     one sentence match an unrelated pronoun (or other short-range context)
     from a completely different sentence. ``required_pattern`` still searches
@@ -162,7 +176,7 @@ class RequiredDisclaimerCheck(RuleCheck):
     def check(self, response: AgentResponse) -> CheckResult:
         reply = response.final_reply
         triggered = any(
-            self._trigger.search(sentence) for sentence in _SENTENCE_SEGMENTER.segment(reply)
+            self._trigger.search(sentence) for sentence in _sentence_segmenter().segment(reply)
         )
         if triggered and not self._required.search(reply):
             return CheckResult(
