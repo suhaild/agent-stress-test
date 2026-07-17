@@ -2,7 +2,33 @@
 {{ indent }}  {{ severity }}
 {{ indent }}</span>{% endmacro %}
 
-{% macro role_label(role) %}<span class="font-mono text-xs font-semibold uppercase tracking-wide {% if role == 'user' %}text-[var(--accent)]{% elif role == 'assistant' %}text-[var(--ink)]{% else %}text-[var(--ink-faint)] italic{% endif %}">{{ role }}</span>{% endmacro %}
+{% macro role_label(role) %}<span class="font-mono text-xs font-semibold uppercase tracking-wide {% if role == 'user' %}text-[var(--accent)]{% elif role == 'assistant' %}text-[var(--ink)]{% elif role == 'tool' %}text-[var(--ink-faint)]{% else %}text-[var(--ink-faint)] italic{% endif %}">{% if role == 'tool' %}🔧 {% endif %}{{ role }}</span>{% endmacro %}
+
+{% macro render_content(content) %}{% if content is string %}<span class="text-[var(--ink)]">{{ content }}</span>{% else %}<div class="space-y-1.5">
+  {%- for block in content %}
+    {%- if block.type == 'text' %}
+    <span class="text-[var(--ink)]">{{ block.text }}</span>
+    {%- elif block.type == 'tool_use' %}
+    <div class="rounded-sm border border-[var(--line)] p-2 font-mono text-xs">
+      <p class="font-semibold">🔧 {{ block.name }}</p>
+      <pre class="mt-1 whitespace-pre-wrap break-all">{{ block.input | tojson(indent=2) }}</pre>
+    </div>
+    {%- elif block.type == 'tool_result' %}
+    <details class="rounded-sm border p-2 font-mono text-xs" style="
+        border-color: {% if block.is_error %}var(--fail){% else %}var(--line){% endif %};
+        background: {% if block.is_error %}var(--fail-dim){% else %}transparent{% endif %};">
+      <summary class="cursor-pointer {% if block.is_error %}text-[var(--fail)]{% endif %}">{% if block.is_error %}Tool Error{% else %}Tool Result{% endif %}</summary>
+      <pre class="mt-1 whitespace-pre-wrap break-all">{{ block.content }}</pre>
+    </details>
+    {%- elif block.type == 'image' %}
+    {%- if block.source.type == 'url' %}
+    <img src="{{ block.source.url }}" alt="image content block" class="max-w-xs rounded-sm border border-[var(--line)]">
+    {%- else %}
+    <img src="data:{{ block.source.media_type }};base64,{{ block.source.data }}" alt="image content block" class="max-w-xs rounded-sm border border-[var(--line)]">
+    {%- endif %}
+    {%- endif %}
+  {%- endfor %}
+</div>{% endif %}{% endmacro %}
 
 {% macro verdict_block(failing) %}{% if failing %}
     {% set verdict = failing[0] %}

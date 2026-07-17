@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_stress_test.composition import _load_bundle
 from agent_stress_test.config import load_agent_spec
 from agent_stress_test.models import Message, RegressionCase, SystemPromptVersion
 from agent_stress_test.orchestration.reliability import score_run
@@ -10,6 +11,9 @@ from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.store.sqlite_store import SqliteStore
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
+from agent_stress_test.targets.tool_calling_verification_agent import (
+    tool_calling_verification_agent,
+)
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "agent_stress_test"
 
@@ -180,15 +184,48 @@ def test_system_prompt_versions_are_returned_most_recent_first(tmp_path):
         assert [v.system_prompt for v in versions] == ["Second.", "First."]
 
 
+# --- Structured tool-call persistence (A4) --------------------------------
+
+
+def test_tool_calls_with_wrong_arguments_persist_structured_and_reload_via_load_bundle(
+    sample_agent_spec_path, tmp_path
+):
+    db = tmp_path / "runs.sqlite"
+    spec = load_agent_spec(sample_agent_spec_path)
+
+    with SqliteStore(db) as store:
+        runner = build_runner(
+            agent_spec=spec,
+            target=PythonFunctionAgent(tool_calling_verification_agent),
+            sim_provider=FakeLLMProvider(),
+            store=store,
+            sample_n=1,
+        )
+        result = runner.run(provider_name="fake", budget=2)
+        run_id = result.run.id
+
+    with SqliteStore(db) as reloaded:
+        _run, tree, _verdicts, _clusters = _load_bundle(reloaded, run_id)
+
+    nodes_with_calls = [node for node in tree.nodes() if node.tool_calls]
+    assert nodes_with_calls, "expected at least one node with a persisted ToolCall"
+    call = nodes_with_calls[0].tool_calls[0]
+    assert call.name == "lookup_order"
+    # Structured — a real dict field, not a string a report would have to
+    # re-parse — and reflects the agent's genuinely wrong argument.
+    assert isinstance(call.input_parameters, dict)
+    assert "order_id" in call.input_parameters
+
+
 # --- Layer boundary: SQLite must not leak outside store/ -----------------
 
 
 def test_sqlite_only_imported_in_the_store_adapter():
     pattern = re.compile(r"^\s*(?:import sqlite3\b|from sqlite3\b)", re.MULTILINE)
-    exempt = SRC_ROOT / "store" / "sqlite_store.py"
+    exempt = SRC_ROOT / "store"
     offenders = [
         str(path.relative_to(SRC_ROOT))
         for path in SRC_ROOT.rglob("*.py")
-        if path != exempt and pattern.search(path.read_text(encoding="utf-8"))
+        if exempt not in path.parents and pattern.search(path.read_text(encoding="utf-8"))
     ]
     assert offenders == []

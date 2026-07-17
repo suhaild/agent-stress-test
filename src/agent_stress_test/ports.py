@@ -1,21 +1,75 @@
 """The interfaces: LLMProvider, TargetAgent, Store."""
 
+import threading
 from abc import ABC, abstractmethod
 
 from agent_stress_test.models import (
     AgentResponse,
+    Capabilities,
     Cluster,
     Message,
     Node,
     RegressionCase,
     Run,
     SystemPromptVersion,
+    TokenUsage,
     Verdict,
 )
 
 
+class UsageMeter:
+    """A live, thread-safe spend accumulator one ``LLMProvider`` instance
+    writes into as a side effect of each real call (see
+    ``LiteLLMProvider._record_usage``/``FakeLLMProvider.complete``) — never
+    part of the abstract ``complete()``/``sample_n()`` contract itself.
+    ``.total()`` returns an immutable ``TokenUsage`` snapshot, which is what
+    ``Runner.run()`` reads once a run finishes and attaches to ``Run.usage``.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
+        self._total_tokens = 0
+        self._cost_usd = 0.0
+        self._pricing_unavailable = False
+
+    def record(
+        self,
+        *,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        cost_usd: float | None,
+    ) -> None:
+        """``cost_usd=None`` means a real cost couldn't be computed for this
+        call (see the caller) — recorded as "pricing unavailable", not
+        silently folded in as free."""
+        with self._lock:
+            self._prompt_tokens += prompt_tokens
+            self._completion_tokens += completion_tokens
+            self._total_tokens += total_tokens
+            if cost_usd is None:
+                self._pricing_unavailable = True
+            else:
+                self._cost_usd += cost_usd
+
+    def total(self) -> TokenUsage:
+        with self._lock:
+            return TokenUsage(
+                prompt_tokens=self._prompt_tokens,
+                completion_tokens=self._completion_tokens,
+                total_tokens=self._total_tokens,
+                cost_usd=self._cost_usd,
+                pricing_unavailable=self._pricing_unavailable,
+            )
+
+
 class LLMProvider(ABC):
     """A source of LLM completions. Real impl wraps litellm; fake impl is deterministic."""
+
+    def __init__(self) -> None:
+        self.meter = UsageMeter()
 
     @abstractmethod
     def complete(self, messages: list[Message]) -> str: ...
@@ -29,6 +83,14 @@ class TargetAgent(ABC):
 
     @abstractmethod
     def respond(self, conversation: list[Message]) -> AgentResponse: ...
+
+    def capabilities(self) -> Capabilities:
+        """What this adapter actually supports. Defaults to the safest
+        possible claim — nothing beyond plain stateless ``respond()`` — so an
+        adapter that never overrides this can't accidentally overclaim;
+        adapters that genuinely support more (e.g. real tool-calling)
+        override it."""
+        return Capabilities()
 
 
 class Embedder(ABC):

@@ -1,0 +1,20 @@
+name: example_provider_target
+
+system_prompt: |
+  You are a minimal example target used to demonstrate the declarative
+  `target: {kind: provider}` wiring — a real model driven directly through
+  litellm's native tool-calling, not the bundled SampleAgent's ReAct-text
+  narration. See targets/provider_agent.py.
+
+tools:
+  - name: lookup_order
+    description: Look up an order by ID.
+
+rules:
+  - id: no-invented-order-data
+    text: "Never invent an order status that lookup_order did not return."
+    severity: major
+
+target:
+  kind: provider
+  model: anthropic/claude-haiku-4-5-20251001

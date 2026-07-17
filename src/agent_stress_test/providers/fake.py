@@ -22,6 +22,7 @@ class FakeLLMProvider(LLMProvider):
         cycle: bool = False,
         default_reply_prefix: str = "fake-reply: ",
     ) -> None:
+        super().__init__()
         self._responses = list(responses) if responses is not None else None
         self._cycle = cycle
         self._default_reply_prefix = default_reply_prefix
@@ -41,9 +42,22 @@ class FakeLLMProvider(LLMProvider):
                     self._next_index = 0
                 reply = self._responses[self._next_index]
                 self._next_index += 1
-                return reply
-        last_content = messages[-1].content if messages else ""
-        return f"{self._default_reply_prefix}{last_content}"
+            else:
+                last_content = messages[-1].content if messages else ""
+                reply = f"{self._default_reply_prefix}{last_content}"
+        # No real API call was made, so there's no real token count to report
+        # either — a plain word count is a deterministic, offline stand-in,
+        # good enough to prove the metering plumbing works end to end. Cost
+        # is always 0.0: nothing was actually billed.
+        prompt_tokens = sum(len(m.content.split()) for m in messages if isinstance(m.content, str))
+        completion_tokens = len(reply.split())
+        self.meter.record(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            cost_usd=0.0,
+        )
+        return reply
 
     def sample_n(self, messages: list[Message], n: int) -> list[str]:
         if n < 1:

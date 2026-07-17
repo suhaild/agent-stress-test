@@ -5,12 +5,21 @@ from agent_stress_test.models import (
     AgentResponse,
     AgentSpec,
     Cluster,
+    ImageBlock,
+    ImageSource,
     Message,
     Node,
     Rule,
     Run,
+    RunUsage,
     Step,
+    TextBlock,
+    TokenUsage,
+    ToolCall,
+    ToolResult,
+    ToolResultBlock,
     ToolSpec,
+    ToolUseBlock,
     Verdict,
 )
 
@@ -30,6 +39,50 @@ def test_message_valid():
     msg = Message(role="user", content="hello")
     assert msg.role == "user"
     assert msg.content == "hello"
+
+
+def test_message_str_content_round_trips():
+    msg = Message(role="user", content="hello")
+    reloaded = Message.model_validate_json(msg.model_dump_json())
+    assert reloaded == msg
+
+
+def test_message_accepts_all_content_block_types():
+    msg = Message(
+        role="assistant",
+        content=[
+            TextBlock(text="let me check that"),
+            ImageBlock(source=ImageSource(type="url", url="https://example.com/x.png")),
+            ToolUseBlock(id="call_1", name="lookup_order", input={"order_id": "123"}),
+            ToolResultBlock(tool_use_id="call_1", content="shipped", is_error=False),
+        ],
+    )
+    reloaded = Message.model_validate_json(msg.model_dump_json())
+    assert reloaded == msg
+    assert [block.type for block in reloaded.content] == [
+        "text",
+        "image",
+        "tool_use",
+        "tool_result",
+    ]
+
+
+def test_message_accepts_tool_role():
+    msg = Message(
+        role="tool",
+        content=[ToolResultBlock(tool_use_id="call_1", content="shipped")],
+    )
+    assert msg.role == "tool"
+
+
+def test_message_rejects_unknown_content_block_type():
+    with pytest.raises(ValidationError):
+        Message(role="assistant", content=[{"type": "bogus", "text": "hi"}])
+
+
+def test_message_rejects_content_block_missing_required_field():
+    with pytest.raises(ValidationError):
+        Message(role="assistant", content=[{"type": "tool_use", "id": "call_1"}])  # no name
 
 
 def test_message_invalid_role():
@@ -83,6 +136,35 @@ def test_run_defaults_and_unique_ids():
     assert run1.id != run2.id
     assert run1.status == "pending"
     assert run1.final_score is None
+    assert run1.usage == RunUsage()
+
+
+def test_run_usage_round_trips():
+    spec = make_agent_spec()
+    run = Run(
+        agent_spec=spec,
+        provider="fake",
+        usage=RunUsage(
+            adversary=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            primary=TokenUsage(
+                prompt_tokens=100,
+                completion_tokens=50,
+                total_tokens=150,
+                cost_usd=0.0042,
+            ),
+        ),
+    )
+
+    reloaded = Run.model_validate_json(run.model_dump_json())
+
+    assert reloaded.usage.adversary.total_tokens == 15
+    assert reloaded.usage.primary.cost_usd == pytest.approx(0.0042)
+    assert reloaded.usage.primary.pricing_unavailable is False
+
+
+def test_token_usage_pricing_unavailable_defaults_to_false():
+    assert TokenUsage().pricing_unavailable is False
+    assert TokenUsage(pricing_unavailable=True).pricing_unavailable is True
 
 
 def test_node_valid_and_unique_ids():
@@ -100,6 +182,21 @@ def test_node_valid_and_unique_ids():
     assert node1.parent_id is None
     assert node1.instability_score is None
     assert node1.verdict_id is None
+    assert node1.tool_calls == []
+
+
+def test_node_with_tool_calls_round_trips():
+    node = Node(
+        run_id="run-1",
+        messages=[Message(role="user", content="hi")],
+        target_reply="hello there",
+        tool_calls=[
+            ToolCall(id="call_1", name="lookup_order", input_parameters={"order_id": "123"})
+        ],
+    )
+    reloaded = Node.model_validate_json(node.model_dump_json())
+    assert reloaded == node
+    assert reloaded.tool_calls[0].name == "lookup_order"
 
 
 def test_verdict_valid():
@@ -163,10 +260,32 @@ def test_cluster_valid():
     assert cluster.representative_node_id is None
 
 
+def test_tool_call_round_trips_and_defaults():
+    call = ToolCall(id="call_1", name="lookup_order", input_parameters={"order_id": "123"})
+    assert call.output is None
+    reloaded = ToolCall.model_validate_json(call.model_dump_json())
+    assert reloaded == call
+
+
+def test_tool_result_round_trips():
+    result = ToolResult(call_id="call_1", content="shipped")
+    assert result.is_error is False
+    reloaded = ToolResult.model_validate_json(result.model_dump_json())
+    assert reloaded == result
+
+
 def test_agent_response_without_trace():
     response = AgentResponse(final_reply="hello")
     assert response.final_reply == "hello"
     assert response.trace is None
+    assert response.tool_calls == []
+
+
+def test_agent_response_with_tool_calls():
+    calls = [ToolCall(id="call_1", name="lookup_order", input_parameters={"order_id": "123"})]
+    response = AgentResponse(final_reply="Your order shipped.", tool_calls=calls)
+    assert response.tool_calls == calls
+    assert response.trace is None  # trace and tool_calls are independent
 
 
 def test_agent_response_with_trace():

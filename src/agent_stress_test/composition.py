@@ -12,6 +12,7 @@ these functions, never re-implement the decisions they make.
 from __future__ import annotations
 
 import argparse
+import importlib
 
 from agent_stress_test.models import AgentSpec, Cluster, Node, Run, Verdict
 from agent_stress_test.orchestration.runner import RunResult
@@ -23,7 +24,10 @@ from agent_stress_test.providers.litellm_provider import LiteLLMProvider
 from agent_stress_test.reasoning.clusterer import FailureClusterer
 from agent_stress_test.reasoning.simulator import default_registry
 from agent_stress_test.targets.http_agent import HttpAgent
+from agent_stress_test.targets.provider_agent import ProviderAgent
+from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.sample_agent import SampleAgent
+from agent_stress_test.targets.subprocess_agent import SubprocessAgent
 
 # The simulator only has to write one plausible adversarial customer line, not
 # solve the task under test — a cheap, fast model does that job as well as the
@@ -52,7 +56,48 @@ def _resolve_sim_provider_name(args: argparse.Namespace) -> str:
 def _build_target(args: argparse.Namespace, spec: AgentSpec, llm: LLMProvider) -> TargetAgent:
     if args.target_url:
         return HttpAgent(args.target_url)
-    return SampleAgent(spec, llm)
+    return _build_target_from_spec(spec, llm)
+
+
+def _build_target_from_spec(spec: AgentSpec, llm: LLMProvider) -> TargetAgent:
+    """Build whatever ``TargetAgent`` a spec's ``target:`` block declares —
+    the one place that reads it generically, so a new kind is a new branch
+    here, not a new special-case threaded through cli.py/server.py. No
+    ``target`` block (the common case) falls back to the bundled
+    SampleAgent, driven by the run's own provider, exactly as before this
+    field existed.
+    """
+    target = spec.target
+    if target is None:
+        return SampleAgent(spec, llm)
+    if target.kind == "http":
+        return HttpAgent(target.url, timeout=target.timeout, headers=target.headers)
+    if target.kind == "python":
+        return _load_python_target(target.import_path)
+    if target.kind == "subprocess":
+        return SubprocessAgent(target.command, timeout=target.timeout, cwd=target.cwd)
+    if target.kind == "provider":
+        return ProviderAgent(LiteLLMProvider(model=target.model), spec)
+    raise ValueError(f"Unknown target kind: {target.kind!r}")  # pragma: no cover - exhaustive union
+
+
+def _load_python_target(import_path: str) -> TargetAgent:
+    """Import ``"module.path:attribute"`` and wrap the callable it names as a
+    ``PythonFunctionAgent`` — the shape any bring-your-own Python function
+    target takes (``Callable[[list[Message]], str | AgentResponse]``)."""
+    module_name, _, attr_name = import_path.partition(":")
+    if not attr_name:
+        raise ValueError(
+            f"Invalid python target import_path '{import_path}' — expected 'module:attribute'."
+        )
+    module = importlib.import_module(module_name)
+    try:
+        fn = getattr(module, attr_name)
+    except AttributeError as exc:
+        raise ValueError(f"'{import_path}' has no attribute '{attr_name}'.") from exc
+    if not callable(fn):
+        raise ValueError(f"'{import_path}' is not callable.")
+    return PythonFunctionAgent(fn)
 
 
 def _rebuild_tree(run_id: str, nodes: list[Node], verdicts: list[Verdict]) -> ConversationTree:

@@ -1,0 +1,17 @@
+name: example_subprocess_target
+
+system_prompt: |
+  You are a minimal example target used to demonstrate the declarative
+  `target: {kind: subprocess}` wiring — see targets/subprocess_agent.py.
+  Backed by scripts/example_subprocess_target.py, a standalone script with no
+  dependency on this codebase (a real bring-your-own target can be written in
+  any language).
+
+rules:
+  - id: no-empty-reply
+    text: "Always reply with something, never an empty string."
+    severity: minor
+
+target:
+  kind: subprocess
+  command: ["python", "scripts/example_subprocess_target.py"]

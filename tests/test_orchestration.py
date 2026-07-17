@@ -20,6 +20,7 @@ from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.reasoning.judge import RulesJudge, build_checks
 from agent_stress_test.reasoning.simulator import Simulator, default_registry
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
+from agent_stress_test.targets.sample_agent import SampleAgent
 
 TACTIC_COUNT = len(default_registry().names())
 
@@ -286,6 +287,47 @@ def test_end_to_end_run_is_deterministic(sample_agent_spec_path):
         )
 
     assert fingerprint(first) == fingerprint(second)
+
+
+# --- Usage metering (A5) ---------------------------------------------------
+
+
+def test_offline_run_populates_run_usage_token_counts_at_zero_cost(sample_agent_spec_path):
+    spec = load_agent_spec(sample_agent_spec_path)
+    llm = FakeLLMProvider()
+    sim_llm = FakeLLMProvider()
+    runner = build_runner(
+        agent_spec=spec,
+        target=SampleAgent(spec, llm),
+        sim_provider=sim_llm,
+        llm=llm,
+        sample_n=1,  # no consistency scorer needed to exercise the meters
+    )
+
+    result = runner.run(provider_name="fake", budget=2)
+
+    assert result.run.usage.primary.total_tokens > 0
+    assert result.run.usage.primary.cost_usd == 0.0
+    assert result.run.usage.primary.pricing_unavailable is False
+    assert result.run.usage.adversary.total_tokens > 0
+    assert result.run.usage.adversary.cost_usd == 0.0
+
+
+def test_run_without_an_llm_kwarg_leaves_primary_usage_at_zero(sample_agent_spec_path):
+    # A target that isn't LLM-backed at all (a scripted Python callable, an
+    # HTTP endpoint, ...) has no meaningful "primary" provider to meter.
+    spec = load_agent_spec(sample_agent_spec_path)
+    runner = build_runner(
+        agent_spec=spec,
+        target=PythonFunctionAgent(lambda conversation: "a scripted reply"),
+        sim_provider=FakeLLMProvider(),
+        sample_n=1,
+    )
+
+    result = runner.run(provider_name="fake", budget=1)
+
+    assert result.run.usage.primary.total_tokens == 0
+    assert result.run.usage.adversary.total_tokens > 0
 
 
 # --- Layer boundary: orchestration stays free of adapters ----------------

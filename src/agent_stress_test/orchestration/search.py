@@ -203,6 +203,7 @@ class GreedyBestFirstSearch(SearchStrategy):
             messages=messages,
             target_reply=response.final_reply,
             tactic=tactic,
+            tool_calls=response.tool_calls,
         )
         if self._scorer is not None:
             node.instability_score = self._scorer.score(messages, self._sample_n)

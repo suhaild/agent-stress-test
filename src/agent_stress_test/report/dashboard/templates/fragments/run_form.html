@@ -35,14 +35,19 @@
       {% endfor %}
     </select>
   </div>
-  <div>
-    <label class="field-label block mb-1">Target Agent's Endpoint</label>
-    <p class="field-help mb-1.5">Bring your own HTTP endpoint for it — blank uses the bundled demo agent instead.</p>
-    <input type="text" name="target_url" placeholder="e.g. http://localhost:5000/chat" class="field-input font-mono">
+  <div x-data="{ showTargetOverride: false }">
+    <button type="button" @click="showTargetOverride = !showTargetOverride" class="field-label mb-1 flex items-center gap-1" style="cursor: pointer;">
+      <span class="text-[var(--ink-faint)] transition-transform duration-150" :class="{ 'rotate-90': showTargetOverride }">▸</span>
+      Advanced: Override Target Endpoint
+    </button>
+    <div x-show="showTargetOverride" x-collapse x-cloak class="mt-1.5">
+      <p class="field-help mb-1.5">Point this run at an ad hoc HTTP endpoint instead — ignores whatever this agent spec's own <code>target:</code> block declares. Leave blank to use the spec's declared target (the bundled demo agent, if it declares none).</p>
+      <input type="text" name="target_url" placeholder="e.g. http://localhost:5000/chat" class="field-input font-mono">
+    </div>
   </div>
   <div>
     <label class="field-label block mb-1">Target Agent's Model</label>
-    <p class="field-help mb-1.5">LLM behind the bundled agent (ignored if using your own endpoint above) and the consistency scorer.</p>
+    <p class="field-help mb-1.5">LLM behind the bundled agent (ignored if the spec declares its own target, or if overridden above) and the consistency scorer.</p>
     {{ model_picker('provider', models, 'fake', models[0].label) }}
   </div>
   <div>

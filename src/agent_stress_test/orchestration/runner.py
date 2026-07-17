@@ -41,11 +41,21 @@ class Runner:
     """Drives one stress-test run over an injected search strategy."""
 
     def __init__(
-        self, agent_spec: AgentSpec, strategy: SearchStrategy, store: Store | None = None
+        self,
+        agent_spec: AgentSpec,
+        strategy: SearchStrategy,
+        store: Store | None = None,
+        *,
+        sim_provider: LLMProvider | None = None,
+        llm: LLMProvider | None = None,
     ) -> None:
         self._agent_spec = agent_spec
         self._strategy = strategy
         self._store = store
+        # Metering only — read once the run finishes (see .run()) and
+        # attached to Run.usage; never used to drive any decision here.
+        self._sim_provider = sim_provider
+        self._llm = llm
 
     def run(
         self,
@@ -80,6 +90,10 @@ class Runner:
 
         reliability = score_run(tree.nodes(), tree.all_verdicts())
         run.final_score = reliability.score
+        if self._sim_provider is not None:
+            run.usage.adversary = self._sim_provider.meter.total()
+        if self._llm is not None:
+            run.usage.primary = self._llm.meter.total()
         run.status = "completed"
         run.completed_at = datetime.now(timezone.utc)
 
@@ -107,6 +121,7 @@ def build_runner(
     agent_spec: AgentSpec,
     target: TargetAgent,
     sim_provider: LLMProvider,
+    llm: LLMProvider | None = None,
     judge: Judge | None = None,
     store: Store | None = None,
     tactics: list[str] | None = None,
@@ -128,6 +143,13 @@ def build_runner(
     skip the extra cost/latency entirely can just pass ``sample_n=1``.
     ``store``, when given, persists the finished run through the ``Store``
     port.
+
+    ``llm``, when given, is read for metering only (see ``Run.usage`` and
+    ``Runner.run()``) — it's whichever ``LLMProvider`` instance backs the
+    target agent (and, by extension, the self-consistency scorer, which just
+    resamples ``target``), never used to build anything here. Omit it for a
+    target that isn't LLM-backed at all (``HttpAgent``, a scripted Python
+    callable, ...) and ``Run.usage.primary`` simply stays at zero.
     """
     simulator = Simulator(sim_provider)
     resolved_judge = judge if judge is not None else build_two_tier_judge(agent_spec, sim_provider)
@@ -140,4 +162,4 @@ def build_runner(
         tactics=tactics,
         sample_n=sample_n,
     )
-    return Runner(agent_spec, strategy, store)
+    return Runner(agent_spec, strategy, store, sim_provider=sim_provider, llm=llm)

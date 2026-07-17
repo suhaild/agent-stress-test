@@ -36,6 +36,7 @@ from agent_stress_test.report.terminal import (
     render_remediation_suggestion,
     render_replay,
 )
+from agent_stress_test.store.migrations import ensure_current_or_raise
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 _DEFAULT_AGENT_SPEC = (
@@ -80,6 +81,7 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
             agent_spec=spec,
             target=target,
             sim_provider=sim_llm,
+            llm=llm,
             store=store,
             tactics=tactics,
             sample_n=sample_n,
@@ -304,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     console = Console()
     try:
+        ensure_current_or_raise(args.db)
         return args.func(args, console)
     except ValueError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")

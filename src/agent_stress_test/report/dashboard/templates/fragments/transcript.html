@@ -1,25 +1,39 @@
-{%- from "macros.html" import role_label, verdict_block -%}
+{%- from "macros.html" import role_label, render_content, verdict_block -%}
 {% set path = tree.path_to_root(node_id) %}
 {% set root_node = path[0] %}
 {% set turns = path[1:] %}
 {% set turns_visible = 2 %}
+{% macro render_tool_calls(tool_calls) %}{% if tool_calls %}
+  <div class="mt-1.5 space-y-1.5">
+    <p class="font-mono text-[.68rem] text-[var(--ink-faint)] uppercase tracking-wide">Tool Calls</p>
+    {% for call in tool_calls %}
+    <div class="rounded-sm border border-[var(--line)] p-2 font-mono text-xs">
+      <p class="font-semibold">🔧 {{ call.name }}</p>
+      <pre class="mt-1 whitespace-pre-wrap break-all">{{ call.input_parameters | tojson(indent=2) }}</pre>
+      {% if call.output %}<p class="mt-1 text-[var(--ink-faint)]">→ {{ call.output }}</p>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+{% endif %}{% endmacro %}
 {% macro render_turn(node) %}
   {% if node.tactic %}<p class="font-mono text-[.68rem] text-[var(--ink-faint)] italic uppercase">tactic: {{ node.tactic }}</p>{% endif %}
   {% set probe = node.messages[-1] %}
-  <p>{{ role_label(probe.role) }}
-    <span class="text-[var(--ink)]">{{ probe.content }}</span></p>
+  <div>{{ role_label(probe.role) }}
+    {{ render_content(probe.content) }}</div>
   <p>{{ role_label('assistant') }}
     <span class="text-[var(--ink-dim)]">{{ node.target_reply }}</span></p>
+  {{ render_tool_calls(node.tool_calls) }}
 {% endmacro %}
 <div class="panel p-5 space-y-2.5 text-sm" x-data="{ expanded: false }">
   {% for message in root_node.messages %}
-  <p>
+  <div>
     {{ role_label(message.role) }}
-    <span class="text-[var(--ink)]">{{ message.content }}</span>
-  </p>
+    {{ render_content(message.content) }}
+  </div>
   {% endfor %}
   <p>{{ role_label('assistant') }}
     <span class="text-[var(--ink-dim)]">{{ root_node.target_reply }}</span></p>
+  {{ render_tool_calls(root_node.tool_calls) }}
 
   {% for node in turns[:turns_visible] %}
     {{ render_turn(node) }}

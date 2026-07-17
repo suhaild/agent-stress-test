@@ -1,15 +1,32 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
-from agent_stress_test.models import AgentResponse, AgentSpec, Message, Rule, Step, ToolSpec
+from agent_stress_test.composition import _build_target_from_spec, _load_python_target
+from agent_stress_test.models import (
+    AgentResponse,
+    AgentSpec,
+    Capabilities,
+    Message,
+    Rule,
+    Step,
+    ToolCall,
+    ToolSpec,
+)
 from agent_stress_test.ports import TargetAgent
 from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.targets.http_agent import HttpAgent
+from agent_stress_test.targets.provider_agent import _STUB_TOOL_RESULT, ProviderAgent, _tool_schemas
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.sample_agent import SampleAgent, _render_system_prompt
+from agent_stress_test.targets.subprocess_agent import SubprocessAgent
+from agent_stress_test.targets.tool_calling_verification_agent import (
+    tool_calling_verification_agent,
+)
 
 
 def make_agent_spec(**overrides) -> AgentSpec:
@@ -327,3 +344,313 @@ def test_http_agent_missing_reply_key_raises(monkeypatch):
 
     with pytest.raises(KeyError):
         agent.respond([Message(role="user", content="hi")])
+
+
+# --- Declarative target: AgentSpec.target ---------------------------------
+
+
+def test_agent_spec_with_no_target_block_defaults_to_none():
+    assert make_agent_spec().target is None
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"kind": "http", "url": "http://example.test/respond"},
+        {"kind": "python", "import_path": "agent_stress_test.targets.examples:echo_target"},
+        {"kind": "subprocess", "command": ["python", "run.py"]},
+        {"kind": "provider", "model": "anthropic/claude-haiku-4-5-20251001"},
+    ],
+)
+def test_agent_spec_validates_each_target_kind(target):
+    spec = make_agent_spec(target=target)
+    assert spec.target.kind == target["kind"]
+
+
+def test_agent_spec_rejects_unknown_target_kind():
+    with pytest.raises(ValidationError):
+        make_agent_spec(target={"kind": "carrier-pigeon"})
+
+
+# --- _build_target_from_spec: each kind builds and responds ---------------
+
+
+def test_build_target_from_spec_with_no_target_returns_sample_agent():
+    target = _build_target_from_spec(make_agent_spec(), FakeLLMProvider())
+    assert isinstance(target, SampleAgent)
+
+
+def test_build_target_from_spec_http_kind(monkeypatch):
+    mock = MagicMock(return_value=make_http_response({"reply": "mocked reply"}))
+    monkeypatch.setattr("agent_stress_test.targets.http_agent.httpx.post", mock)
+    spec = make_agent_spec(target={"kind": "http", "url": "http://example.test/respond"})
+
+    target = _build_target_from_spec(spec, FakeLLMProvider())
+
+    assert isinstance(target, HttpAgent)
+    result = target.respond([Message(role="user", content="hi")])
+    assert result.final_reply == "mocked reply"
+
+
+def test_build_target_from_spec_python_kind():
+    spec = make_agent_spec(
+        target={"kind": "python", "import_path": "agent_stress_test.targets.examples:echo_target"}
+    )
+
+    target = _build_target_from_spec(spec, FakeLLMProvider())
+
+    assert isinstance(target, PythonFunctionAgent)
+    result = target.respond([Message(role="user", content="hello there")])
+    assert result.final_reply == "You said: hello there"
+
+
+def test_load_python_target_rejects_a_path_with_no_attribute():
+    with pytest.raises(ValueError, match="module:attribute"):
+        _load_python_target("agent_stress_test.targets.examples")
+
+
+def test_load_python_target_rejects_an_unknown_attribute():
+    with pytest.raises(ValueError, match="no attribute"):
+        _load_python_target("agent_stress_test.targets.examples:does_not_exist")
+
+
+def test_build_target_from_spec_subprocess_kind(monkeypatch):
+    fake_result = SimpleNamespace(
+        returncode=0, stdout=json.dumps({"reply": "subprocess reply"}), stderr=""
+    )
+    mock_run = MagicMock(return_value=fake_result)
+    monkeypatch.setattr("agent_stress_test.targets.subprocess_agent.subprocess.run", mock_run)
+    spec = make_agent_spec(target={"kind": "subprocess", "command": ["echo-agent"]})
+
+    target = _build_target_from_spec(spec, FakeLLMProvider())
+
+    assert isinstance(target, SubprocessAgent)
+    result = target.respond([Message(role="user", content="hi")])
+    assert result.final_reply == "subprocess reply"
+    mock_run.assert_called_once()
+
+
+def test_build_target_from_spec_provider_kind(monkeypatch):
+    mock_completion = MagicMock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="final reply", tool_calls=None))
+            ]
+        )
+    )
+    monkeypatch.setattr(
+        "agent_stress_test.providers.litellm_provider.litellm.completion", mock_completion
+    )
+    spec = make_agent_spec(
+        target={"kind": "provider", "model": "anthropic/claude-haiku-4-5-20251001"}
+    )
+
+    target = _build_target_from_spec(spec, FakeLLMProvider())
+
+    assert isinstance(target, ProviderAgent)
+    result = target.respond([Message(role="user", content="hi")])
+    assert result.final_reply == "final reply"
+
+
+def test_build_target_from_spec_unknown_kind_raises_clean_error():
+    # AgentSpec itself already rejects an unknown kind at validation time
+    # (see test_agent_spec_rejects_unknown_target_kind); model_copy bypasses
+    # that validation, letting this prove _build_target_from_spec's own
+    # defensive fallback is a clean ValueError too, not a raw AttributeError.
+    spec = make_agent_spec().model_copy(update={"target": SimpleNamespace(kind="carrier-pigeon")})
+
+    with pytest.raises(ValueError, match="Unknown target kind"):
+        _build_target_from_spec(spec, FakeLLMProvider())
+
+
+# --- ProviderAgent ---------------------------------------------------------
+
+
+class _FakeToolCallingProvider:
+    def __init__(self, turns):
+        self._turns = list(turns)
+        self.calls: list[list[Message]] = []
+
+    def complete_with_tools(self, messages, tools):
+        self.calls.append(list(messages))
+        return self._turns.pop(0)
+
+
+def test_provider_agent_is_a_target_agent():
+    agent = ProviderAgent(_FakeToolCallingProvider([("hi", [])]), make_agent_spec())
+    assert isinstance(agent, TargetAgent)
+
+
+def test_provider_agent_returns_reply_with_no_tool_calls():
+    fake = _FakeToolCallingProvider([("just a plain reply", [])])
+    agent = ProviderAgent(fake, make_agent_spec())
+
+    result = agent.respond([Message(role="user", content="hi")])
+
+    assert result == AgentResponse(final_reply="just a plain reply", tool_calls=[])
+    assert len(fake.calls) == 1
+
+
+def test_provider_agent_resolves_tool_calls_with_a_stub_and_asks_again():
+    call = ToolCall(id="call_1", name="lookup_order", input_parameters={"order_id": "123"})
+    fake = _FakeToolCallingProvider([("", [call]), ("Your order shipped.", [])])
+    agent = ProviderAgent(fake, make_agent_spec())
+
+    result = agent.respond([Message(role="user", content="Where's my order?")])
+
+    assert result.final_reply == "Your order shipped."
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].id == "call_1"
+    assert result.tool_calls[0].output == _STUB_TOOL_RESULT
+    assert len(fake.calls) == 2
+    assert [m.role for m in fake.calls[1][-2:]] == ["assistant", "tool"]
+
+
+def test_provider_agent_stops_after_max_tool_rounds():
+    call = ToolCall(id="call_1", name="lookup_order", input_parameters={})
+    fake = _FakeToolCallingProvider([("", [call])] * 2)
+    agent = ProviderAgent(fake, make_agent_spec(), max_tool_rounds=2)
+
+    result = agent.respond([Message(role="user", content="hi")])
+
+    assert len(fake.calls) == 2
+    assert len(result.tool_calls) == 2  # one per round, never actually executed
+    assert result.final_reply == ""
+
+
+def test_tool_schemas_declares_an_open_object_per_tool():
+    spec = make_agent_spec()
+    schemas = _tool_schemas(spec)
+
+    assert len(schemas) == len(spec.tools)
+    assert schemas[0]["function"]["name"] == spec.tools[0].name
+    assert schemas[0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    }
+
+
+# --- SubprocessAgent -------------------------------------------------------
+
+
+def _fake_completed_process(stdout: str, returncode: int = 0, stderr: str = "") -> SimpleNamespace:
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def test_subprocess_agent_is_a_target_agent():
+    assert isinstance(SubprocessAgent(command=["true"]), TargetAgent)
+
+
+def test_subprocess_agent_posts_conversation_json_and_returns_reply(monkeypatch):
+    mock_run = MagicMock(return_value=_fake_completed_process(json.dumps({"reply": "hi back"})))
+    monkeypatch.setattr("agent_stress_test.targets.subprocess_agent.subprocess.run", mock_run)
+    agent = SubprocessAgent(command=["fake-agent"], timeout=5.0)
+
+    result = agent.respond([Message(role="user", content="hello")])
+
+    assert result == AgentResponse(final_reply="hi back", trace=None)
+    _, kwargs = mock_run.call_args
+    assert json.loads(kwargs["input"]) == {"messages": [{"role": "user", "content": "hello"}]}
+    assert kwargs["timeout"] == 5.0
+
+
+def test_subprocess_agent_passes_through_trace_when_present(monkeypatch):
+    trace_payload = [{"thought": "checked the order", "action": "lookup_order"}]
+    mock_run = MagicMock(
+        return_value=_fake_completed_process(
+            json.dumps({"reply": "shipped", "trace": trace_payload})
+        )
+    )
+    monkeypatch.setattr("agent_stress_test.targets.subprocess_agent.subprocess.run", mock_run)
+    agent = SubprocessAgent(command=["fake-agent"])
+
+    result = agent.respond([Message(role="user", content="hi")])
+
+    assert result.trace == [Step(thought="checked the order", action="lookup_order")]
+
+
+def test_subprocess_agent_raises_on_non_zero_exit(monkeypatch):
+    mock_run = MagicMock(return_value=_fake_completed_process("", returncode=1, stderr="boom"))
+    monkeypatch.setattr("agent_stress_test.targets.subprocess_agent.subprocess.run", mock_run)
+    agent = SubprocessAgent(command=["fake-agent"])
+
+    with pytest.raises(RuntimeError, match="boom"):
+        agent.respond([Message(role="user", content="hi")])
+
+
+# --- Capabilities (A4) ------------------------------------------------------
+
+
+def test_sample_agent_capabilities_default_to_all_false():
+    agent = SampleAgent(make_agent_spec(), FakeLLMProvider())
+    assert agent.capabilities() == Capabilities()
+
+
+def test_http_agent_capabilities_default_to_all_false():
+    assert HttpAgent(url="http://example.test/respond").capabilities() == Capabilities()
+
+
+def test_python_function_agent_capabilities_default_to_all_false():
+    agent = PythonFunctionAgent(lambda conversation: "reply")
+    assert agent.capabilities() == Capabilities()
+
+
+def test_python_function_agent_capabilities_can_be_declared_explicitly():
+    agent = PythonFunctionAgent(lambda conversation: "reply", capabilities=Capabilities(tools=True))
+    assert agent.capabilities() == Capabilities(tools=True)
+
+
+def test_subprocess_agent_capabilities_default_to_all_false():
+    assert SubprocessAgent(command=["true"]).capabilities() == Capabilities()
+
+
+def test_provider_agent_reports_real_tool_calling_capability():
+    agent = ProviderAgent(_FakeToolCallingProvider([("hi", [])]), make_agent_spec())
+    assert agent.capabilities() == Capabilities(tools=True)
+
+
+# --- tool_calling_verification_agent (A4 verification target) --------------
+
+
+def test_tool_calling_verification_agent_calls_lookup_order_with_a_wrong_id():
+    conversation = [Message(role="user", content="Where is order 12345?")]
+
+    result = tool_calling_verification_agent(conversation)
+
+    assert len(result.tool_calls) == 1
+    call = result.tool_calls[0]
+    assert call.name == "lookup_order"
+    assert call.input_parameters["order_id"] != "12345"
+
+
+def test_tool_calling_verification_agent_is_deterministic():
+    conversation = [Message(role="user", content="Where is order 12345?")]
+
+    first = tool_calling_verification_agent(conversation)
+    second = tool_calling_verification_agent(conversation)
+
+    assert first.tool_calls[0].input_parameters == second.tool_calls[0].input_parameters
+
+
+def test_tool_calling_verification_agent_falls_back_when_no_order_id_present():
+    result = tool_calling_verification_agent([Message(role="user", content="Hi there")])
+    assert result.tool_calls[0].input_parameters["order_id"] == "00001"
+
+
+def test_build_target_from_spec_wires_the_tool_calling_verification_agent():
+    spec = make_agent_spec(
+        target={
+            "kind": "python",
+            "import_path": (
+                "agent_stress_test.targets.tool_calling_verification_agent:"
+                "tool_calling_verification_agent"
+            ),
+        }
+    )
+
+    target = _build_target_from_spec(spec, FakeLLMProvider())
+    result = target.respond([Message(role="user", content="Where is order 98765?")])
+
+    assert result.tool_calls[0].name == "lookup_order"
+    assert result.tool_calls[0].input_parameters["order_id"] != "98765"

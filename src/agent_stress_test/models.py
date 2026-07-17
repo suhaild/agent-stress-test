@@ -1,7 +1,7 @@
 """Pydantic data models: Run, Node, Verdict, Cluster, AgentSpec."""
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -9,13 +9,83 @@ from pydantic import BaseModel, ConfigDict, Field
 Severity = Literal["minor", "major", "critical"]
 
 
-class Message(BaseModel):
-    """One turn in a conversation, in the shape every port passes around."""
+class TextBlock(BaseModel):
+    """A plain-text content block, litellm/Anthropic-shaped."""
 
     model_config = ConfigDict(extra="forbid")
 
-    role: Literal["system", "user", "assistant"]
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ImageSource(BaseModel):
+    """An image's payload — either inline base64 or a fetchable URL."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["base64", "url"]
+    media_type: str | None = None
+    data: str | None = None
+    url: str | None = None
+
+
+class ImageBlock(BaseModel):
+    """An image content block, litellm/Anthropic-shaped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["image"] = "image"
+    source: ImageSource
+
+
+class ToolUseBlock(BaseModel):
+    """An assistant-issued tool call, as a content block (litellm/Anthropic-shaped).
+
+    Field name is ``input`` (not ``input_parameters``) because this mirrors
+    the wire format litellm/Anthropic expect on the message itself — see
+    ``ToolCall`` for our own domain-level record of a tool call, which uses
+    ``input_parameters`` to match DeepEval's field name instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["tool_use"] = "tool_use"
+    id: str
+    name: str
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolResultBlock(BaseModel):
+    """A tool's result, as a content block (litellm/Anthropic-shaped)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["tool_result"] = "tool_result"
+    tool_use_id: str
     content: str
+    is_error: bool = False
+
+
+ContentBlock = Annotated[
+    TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock,
+    Field(discriminator="type"),
+]
+
+
+class Message(BaseModel):
+    """One turn in a conversation, in the shape every port passes around.
+
+    ``content`` is usually plain text; it widens to a list of content blocks
+    only for messages that carry multimodal input or a tool call/result —
+    the "tool" role exists for the latter. Adapters that don't understand
+    block content (the fake provider, today) only ever see plain-text
+    messages, so nothing about them needs to change.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str | list[ContentBlock]
     # Provider-agnostic hint: this message ends a cacheable prompt prefix.
     # Adapters that support prompt caching (e.g. litellm_provider) may act on
     # it; others (e.g. the fake provider) ignore it.
@@ -38,13 +108,53 @@ class Step(BaseModel):
     observation: str | None = None
 
 
+class ToolCall(BaseModel):
+    """A structured record of one tool invocation a target agent made.
+
+    ``input_parameters`` (not ``arguments``/``input``) matches DeepEval's own
+    ``ToolCall`` field name, so this can be handed to DeepEval's tool metrics
+    (Phase C) without renaming. ``output`` holds the resolved result, if any —
+    an adapter that resolves a call's result separately (see ``ToolResult``)
+    folds it in here before the call is persisted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    input_parameters: dict[str, Any] = Field(default_factory=dict)
+    output: str | None = None
+
+
+class ToolResult(BaseModel):
+    """A tool's result, correlated back to its call by ``call_id``.
+
+    A standalone value an adapter can produce when it resolves a tool call
+    out of band, before folding ``content`` into the matching
+    ``ToolCall.output``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    call_id: str
+    content: str
+    is_error: bool = False
+
+
 class AgentResponse(BaseModel):
-    """A target agent's reply, plus its reasoning trace if it exposed one."""
+    """A target agent's reply, plus its reasoning trace/tool calls if any.
+
+    ``trace`` is the older free-text Step narration (still used by the
+    bundled ReAct-style SampleAgent); ``tool_calls`` is the newer structured
+    record a genuine tool-calling target (Phase A6) reports instead. Both are
+    additive and independent — a target reports whichever fits how it works.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     final_reply: str
     trace: list[Step] | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
 class ToolSpec(BaseModel):
@@ -54,6 +164,111 @@ class ToolSpec(BaseModel):
 
     name: str
     description: str
+
+
+class HttpTargetConfig(BaseModel):
+    """``target: {kind: http}`` — an HTTP/JSON endpoint (see ``targets/http_agent.py``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["http"] = "http"
+    url: str
+    headers: dict[str, str] | None = None
+    timeout: float = 30.0
+
+
+class PythonTargetConfig(BaseModel):
+    """``target: {kind: python}`` — a bring-your-own Python callable.
+
+    ``import_path`` is ``"module.path:attribute"``: the module is imported
+    and the named attribute, a ``Callable[[list[Message]], str |
+    AgentResponse]``, is wrapped as a ``PythonFunctionAgent`` (see
+    ``composition.py``'s ``_load_python_target``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["python"] = "python"
+    import_path: str
+
+
+class SubprocessTargetConfig(BaseModel):
+    """``target: {kind: subprocess}`` — a command-line process speaking
+    stdin/stdout JSON framing (see ``targets/subprocess_agent.py``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["subprocess"] = "subprocess"
+    command: list[str]
+    timeout: float = 30.0
+    cwd: str | None = None
+
+
+class ProviderTargetConfig(BaseModel):
+    """``target: {kind: provider}`` — a bare model id driven directly through
+    litellm's native tool-calling, using the spec's own tools/system prompt
+    (see ``targets/provider_agent.py``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["provider"] = "provider"
+    model: str
+
+
+TargetConfig = Annotated[
+    HttpTargetConfig | PythonTargetConfig | SubprocessTargetConfig | ProviderTargetConfig,
+    Field(discriminator="kind"),
+]
+
+
+class Capabilities(BaseModel):
+    """What a ``TargetAgent`` adapter actually supports, declared up front
+    (see ``TargetAgent.capabilities()`` in ``ports.py``) so a probe that needs
+    e.g. real tool-calling can ask before running, rather than discovering
+    "this target can't do that" as a confusing mid-run failure. Deliberately
+    just four booleans — no session lifecycle yet (see the build plan's
+    Phase D).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tools: bool = False
+    sessions: bool = False
+    streaming: bool = False
+    multimodal: bool = False
+
+
+class TokenUsage(BaseModel):
+    """Token counts + dollar cost accumulated across some set of LLM calls —
+    the immutable snapshot a ``UsageMeter`` (see ``ports.py``) produces via
+    ``.total()``. ``cost_usd`` stays ``0.0`` whenever a real cost couldn't be
+    computed (the fake provider, or a model id litellm's pricing table
+    doesn't recognize) — ``pricing_unavailable`` says why, rather than a
+    silently-wrong ``0.0`` being mistaken for "this really was free".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    pricing_unavailable: bool = False
+
+
+class RunUsage(BaseModel):
+    """A run's spend, split "adversary vs. rest" (see the build plan's Phase
+    A5): ``adversary`` is whatever drove the adversarial simulator (and, by
+    default, the tier-2 judge — see ``build_two_tier_judge``'s default
+    provider); ``primary`` is whatever drives the target agent itself (and,
+    by extension, the self-consistency scorer, which just resamples the
+    target) — see ``Runner.run()``, which reads both meters' totals here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    adversary: TokenUsage = Field(default_factory=TokenUsage)
+    primary: TokenUsage = Field(default_factory=TokenUsage)
 
 
 CheckType = Literal[
@@ -91,7 +306,13 @@ class Rule(BaseModel):
 
 
 class AgentSpec(BaseModel):
-    """The declarative definition of the agent under test."""
+    """The declarative definition of the agent under test.
+
+    ``target`` describes how to build the ``TargetAgent`` this spec runs
+    against (see ``composition.py``'s ``_build_target_from_spec``) — left
+    unset (the common case), the run falls back to the bundled, LLM-driven
+    ``SampleAgent`` instead.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -99,6 +320,7 @@ class AgentSpec(BaseModel):
     system_prompt: str = Field(min_length=1)
     tools: list[ToolSpec] = Field(default_factory=list)
     rules: list[Rule] = Field(min_length=1)
+    target: TargetConfig | None = None
 
 
 class Run(BaseModel):
@@ -115,6 +337,7 @@ class Run(BaseModel):
     completed_at: datetime | None = None
     final_score: float | None = None
     error: str | None = None
+    usage: RunUsage = Field(default_factory=RunUsage)
 
 
 class Node(BaseModel):
@@ -130,6 +353,10 @@ class Node(BaseModel):
     tactic: str | None = None
     instability_score: float | None = None
     verdict_id: str | None = None
+    # The structured tool calls the target made producing target_reply, if
+    # any (see AgentResponse.tool_calls) — persisted so a judge/metric or a
+    # replayed report can see them later, not just at judging time.
+    tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
 class Verdict(BaseModel):

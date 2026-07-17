@@ -50,6 +50,7 @@ from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.reasoning.judge import build_two_tier_judge
 from agent_stress_test.reasoning.remediation import RemediationSuggester
 from agent_stress_test.reasoning.simulator import default_registry
+from agent_stress_test.store.migrations import ensure_current_or_raise
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 _DEFAULT_DB = "runs.sqlite"
@@ -310,6 +311,7 @@ def _execute_run(
                 agent_spec=spec,
                 target=target,
                 sim_provider=sim_llm,
+                llm=llm,
                 store=store,
                 tactics=tactics,
                 sample_n=sample_n,
@@ -533,6 +535,7 @@ def _run_events(run_id: str, db_path: str) -> Iterator[str]:
 def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     """Build the dashboard app. ``db_path`` is fixed here, at process startup —
     never accepted from a client request (see module docstring on trust)."""
+    ensure_current_or_raise(db_path)
     app = FastAPI(title="Agent Stress-Test Dashboard")
     app.state.db_path = db_path
 

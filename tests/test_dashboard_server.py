@@ -6,7 +6,18 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from agent_stress_test.config import load_agent_spec
-from agent_stress_test.models import Cluster, Message, Node, Run, Verdict
+from agent_stress_test.models import (
+    Cluster,
+    Message,
+    Node,
+    Run,
+    TextBlock,
+    ToolCall,
+    ToolResultBlock,
+    ToolUseBlock,
+    Verdict,
+)
+from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.report.dashboard.server import _diff_blocks, create_app, templates
 from agent_stress_test.store.sqlite_store import SqliteStore
@@ -80,6 +91,26 @@ def test_post_runs_rejects_an_unknown_agent_spec(tmp_path):
     response = client.post(
         "/runs", data={"agent_spec_id": "does-not-exist.yaml", "provider": "fake"}
     )
+
+    assert response.status_code == 400
+
+
+def test_post_runs_rejects_agent_spec_id_outside_the_whitelist_even_with_a_target_block(tmp_path):
+    """`AgentSpec.target` can now declare a subprocess/provider target —
+    _resolve_agent_spec_path's enumerated whitelist (config/agents/*.yaml
+    only) is the only thing standing between a client-supplied
+    agent_spec_id and real code execution, so it must still reject anything
+    outside it, even a path that would otherwise parse as a valid spec."""
+    evil_spec = tmp_path / "evil.yaml"
+    evil_spec.write_text(
+        "name: evil\n"
+        "system_prompt: hi\n"
+        "rules:\n  - {id: r, text: t}\n"
+        "target:\n  kind: subprocess\n  command: ['python', '-c', 'print(1)']\n"
+    )
+    client = _client(tmp_path)
+
+    response = client.post("/runs", data={"agent_spec_id": str(evil_spec), "provider": "fake"})
 
     assert response.status_code == 400
 
@@ -615,3 +646,109 @@ def test_failure_row_severity_tag_markup_is_unchanged_by_the_macro_refactor():
     )
 
     assert re.search(r'<span class="tag tag-fail">\s*critical\s*</span>', rendered)
+
+
+# --- render_content: list-shaped content + XSS (A6) -----------------------
+
+
+def _render_transcript(node: Node) -> str:
+    tree = ConversationTree(node.run_id)
+    tree.add(node)
+    return templates.env.get_template("fragments/transcript.html").render(
+        tree=tree, node_id=node.id, failures=[]
+    )
+
+
+def test_transcript_renders_list_shaped_content_without_raw_repr_leak():
+    """A Message.content list of ContentBlocks must render through
+    render_content(), never fall through to Jinja's default str() of the
+    Pydantic models themselves (which would leak "TextBlock(type='text', ...)"
+    straight into the page)."""
+    node = Node(
+        run_id="run-1",
+        messages=[
+            Message(
+                role="user",
+                content=[
+                    TextBlock(text="Where is my order?"),
+                    ToolUseBlock(id="call_1", name="lookup_order", input={"order_id": "123"}),
+                ],
+            )
+        ],
+        target_reply="Let me check that.",
+    )
+
+    rendered = _render_transcript(node)
+
+    assert "TextBlock(" not in rendered
+    assert "ToolUseBlock(" not in rendered
+    assert "content=" not in rendered
+    assert "Where is my order?" in rendered
+    assert "lookup_order" in rendered
+
+
+def test_transcript_escapes_a_malicious_tool_result_instead_of_rendering_it_raw():
+    payload = "<script>alert(1)</script>"
+    node = Node(
+        run_id="run-1",
+        messages=[
+            Message(role="tool", content=[ToolResultBlock(tool_use_id="call_1", content=payload)])
+        ],
+        target_reply="Handled.",
+    )
+
+    rendered = _render_transcript(node)
+
+    assert payload not in rendered
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
+
+
+def test_transcript_escapes_a_malicious_tool_call_output_in_the_tool_calls_subblock():
+    payload = "<script>alert(1)</script>"
+    node = Node(
+        run_id="run-1",
+        messages=[Message(role="user", content="Where is my order?")],
+        target_reply="Let me check.",
+        tool_calls=[
+            ToolCall(id="call_1", name="lookup_order", input_parameters={}, output=payload)
+        ],
+    )
+
+    rendered = _render_transcript(node)
+
+    assert payload not in rendered
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
+    assert "lookup_order" in rendered
+
+
+def test_run_form_gates_the_target_url_override_behind_a_disclosure(tmp_path):
+    """A6: target: is now declarative (A3), so the manual HTTP-override box
+    is gated behind an "Advanced" disclosure instead of sitting in the main
+    form — the field itself (`name="target_url"`) must still be present so
+    existing POST /runs callers are unaffected."""
+    client = _client(tmp_path)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Advanced: Override Target Endpoint" in response.text
+    assert 'name="target_url"' in response.text
+    assert "showTargetOverride" in response.text
+
+
+def test_transcript_renders_tool_role_messages_with_a_distinct_label():
+    node = Node(
+        run_id="run-1",
+        messages=[
+            Message(role="user", content="hi"),
+            Message(
+                role="tool", content=[ToolResultBlock(tool_use_id="call_1", content="shipped")]
+            ),
+        ],
+        target_reply="On its way.",
+    )
+
+    rendered = _render_transcript(node)
+
+    assert "tool" in rendered
+    assert "shipped" in rendered

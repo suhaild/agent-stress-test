@@ -1,0 +1,16 @@
+name: example_http_target
+
+system_prompt: |
+  You are a minimal example target used to demonstrate the declarative
+  `target: {kind: http}` wiring — see targets/http_agent.py. Point `url` at
+  any HTTP endpoint that accepts {"messages": [...]} and returns
+  {"reply": "..."}.
+
+rules:
+  - id: no-empty-reply
+    text: "Always reply with something, never an empty string."
+    severity: minor
+
+target:
+  kind: http
+  url: http://localhost:5000/chat

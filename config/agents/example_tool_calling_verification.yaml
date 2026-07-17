@@ -1,0 +1,23 @@
+name: example_tool_calling_verification
+
+system_prompt: |
+  You are a minimal verification target used to exercise real, structured
+  ToolCall data (see targets/tool_calling_verification_agent.py) — unlike the
+  bundled SampleAgent, which only narrates tool use as free-text reasoning
+  and never populates AgentResponse.tool_calls. Deliberately calls
+  lookup_order with the WRONG order id every time, so a future
+  ArgumentCorrectnessMetric (Phase C) has something concretely wrong to
+  score.
+
+tools:
+  - name: lookup_order
+    description: Look up an order by ID.
+
+rules:
+  - id: no-invented-order-data
+    text: "Never invent an order status that lookup_order did not return."
+    severity: major
+
+target:
+  kind: python
+  import_path: agent_stress_test.targets.tool_calling_verification_agent:tool_calling_verification_agent
