@@ -4,27 +4,23 @@
 Routes here only translate HTTP <-> the same ``build_runner()``/``Runner``
 wiring ``cli.py`` uses; the shared decision logic (which provider, which
 tactics, how to reload a finished run) lives in ``composition.py`` so neither
-front end duplicates it. This module owns two things nothing else needs: the
-in-process registry of in-progress runs (so the live failure feed has
-something to read before anything reaches the store) and the HTTP/template
-glue itself.
+front end duplicates it. The live-run registry and SSE scheduler live in
+``live_events.py``; system-prompt diffing and version history live in
+``prompt_diff.py``; cluster/conversation-verdict ranking shared with the CLI
+report lives in ``report/shared.py``. This module owns what's left: the HTTP
+routes themselves, plus the one background-thread job (``_execute_run``)
+they launch.
 """
 
 from __future__ import annotations
 
-import difflib
 import threading
-import time
 import traceback
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterator
 from uuid import uuid4
 
-import pysbd
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -38,15 +34,7 @@ from agent_stress_test.composition import (
     cluster_and_persist,
 )
 from agent_stress_test.config import apply_system_prompt, load_agent_spec, load_settings
-from agent_stress_test.models import (
-    AgentSpec,
-    Cluster,
-    ProfilePersona,
-    Rule,
-    Run,
-    SystemPromptVersion,
-    Verdict,
-)
+from agent_stress_test.models import AgentSpec, ProfilePersona, Rule, Run, Verdict
 from agent_stress_test.orchestration.regression import (
     RegressionRunner,
     promote_clusters_to_cases,
@@ -60,12 +48,23 @@ from agent_stress_test.orchestration.reliability import (
     score_run,
 )
 from agent_stress_test.orchestration.runner import build_runner
-from agent_stress_test.orchestration.search import SEVERITY_WEIGHT
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.reasoning.judge import build_two_tier_judge
 from agent_stress_test.reasoning.profiler import AgentProfiler
 from agent_stress_test.reasoning.remediation import RemediationSuggester
 from agent_stress_test.reasoning.simulator import default_registry
+from agent_stress_test.report.dashboard.live_events import (
+    _live_trees,
+    _live_trees_lock,
+    _locked_cluster_ids,
+    _run_events,
+)
+from agent_stress_test.report.dashboard.prompt_diff import (
+    _diff_blocks,
+    _prompt_version_history,
+    _record_prompt_version,
+)
+from agent_stress_test.report.shared import _conversation_verdicts_by_leaf, _ranked_clusters
 from agent_stress_test.store.migrations import ensure_current_or_raise
 from agent_stress_test.store.sqlite_store import SqliteStore
 
@@ -83,15 +82,6 @@ _SCORING_MODELS = {
 # server.py -> dashboard -> report -> agent_stress_test -> src -> repo root
 _CONFIG_AGENTS_DIR = Path(__file__).resolve().parents[4] / "config" / "agents"
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
-
-# Registered by the request thread the instant a run starts, before the
-# background thread is even spawned, so the SSE endpoint never has to guard
-# against "not registered yet". ``GreedyBestFirstSearch.search()`` mutates
-# each tree in place from the run's own thread while this module reads it
-# from the request-serving threadpool; ``ConversationTree`` guards every
-# access with its own lock (see tree.py) so that read/write race is safe.
-_live_trees: dict[str, ConversationTree] = {}
-_live_trees_lock = threading.Lock()
 
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
@@ -173,164 +163,6 @@ def _find_agent_spec_by_name(agent_spec_name: str) -> AgentSpec:
     return load_agent_spec(_find_agent_spec_path_by_name(agent_spec_name))
 
 
-def _locked_cluster_ids(store: SqliteStore, agent_spec_name: str) -> set[str]:
-    """Cluster ids already promoted into the regression corpus — so the Lock
-    button can show "locked" instead of silently minting duplicate cases."""
-    return {case.source_cluster_id for case in store.get_regression_cases(agent_spec_name)}
-
-
-_SENTENCE_SEGMENTER = pysbd.Segmenter(language="en", clean=False)
-
-
-def _normalize_for_diff(text: str) -> list[str]:
-    """Split text into sentences for diffing, ignoring incidental line-wrap
-    width. A raw line-based diff is misleading here: the YAML's system_prompt
-    is hard-wrapped at a fixed column width, but an LLM's suggested
-    replacement rarely reproduces that exact wrap point — so a plain
-    ``str.splitlines()`` diff shows the whole paragraph as removed-and-re-added
-    even when only one sentence actually changed. Collapsing whitespace first
-    (so wrapping can't matter) and segmenting by sentence gives a diff that
-    tracks meaning, not incidental formatting.
-    """
-    collapsed = " ".join(text.split())
-    return [s.strip() for s in _SENTENCE_SEGMENTER.segment(collapsed) if s.strip()]
-
-
-def _diff_blocks(old_text: str, new_text: str) -> list[dict]:
-    """Groups a unified diff into template-ready blocks for a browser
-    audience, not a `git diff` reader: each contiguous run of unchanged
-    sentences becomes one ``{"kind": "context", "text": ...}`` row (labeled
-    "unchanged" in the template — shown only for orientation, so it's clear
-    it's surrounding prompt text, not part of the edit), and each run of
-    removed/added sentences becomes one ``{"kind": "change", "previous":
-    [...], "suggested": [...]}`` pair, labeled "previous"/"suggested"
-    explicitly rather than relying on red/green coloring alone to say which
-    side is which. The raw ``---``/``+++``/``@@ -3,4 +3,4 @@`` unified-diff
-    header lines (meaningful line positions to a `git diff` reader, noise to
-    everyone else) are dropped entirely.
-    """
-    lines = difflib.unified_diff(_normalize_for_diff(old_text), _normalize_for_diff(new_text), lineterm="")
-    blocks: list[dict] = []
-    previous: list[str] = []
-    suggested: list[str] = []
-    context: list[str] = []
-
-    def flush_change() -> None:
-        if previous or suggested:
-            blocks.append({"kind": "change", "previous": list(previous), "suggested": list(suggested)})
-            previous.clear()
-            suggested.clear()
-
-    def flush_context() -> None:
-        if context:
-            blocks.append({"kind": "context", "text": " ".join(context)})
-            context.clear()
-
-    for line in lines:
-        if line.startswith("---") or line.startswith("+++") or line.startswith("@@"):
-            continue
-        if line.startswith("-"):
-            flush_context()
-            previous.append(line[1:])
-        elif line.startswith("+"):
-            flush_context()
-            suggested.append(line[1:])
-        else:
-            flush_change()
-            context.append(line[1:])
-    flush_change()
-    flush_context()
-    return blocks
-
-
-def _record_prompt_version(
-    store: SqliteStore, agent_spec_name: str, system_prompt: str
-) -> None:
-    """Content-addressed history: records ``system_prompt`` as a version only
-    if an identical one isn't already on file for this agent. Without this,
-    restoring an old version (or re-applying one just undone) would log a
-    fresh duplicate row every time — the history would grow on every click
-    instead of being a genuine list of distinct versions. Restoring content
-    that's already recorded just moves which row counts as "current"; it
-    never mints a new one.
-    """
-    already_recorded = any(
-        v.system_prompt == system_prompt for v in store.get_system_prompt_versions(agent_spec_name)
-    )
-    if not already_recorded:
-        store.save_system_prompt_version(
-            SystemPromptVersion(agent_spec_name=agent_spec_name, system_prompt=system_prompt)
-        )
-
-
-def _prompt_version_history(
-    current_system_prompt: str, prompt_versions: list[SystemPromptVersion]
-) -> list[dict]:
-    """One row per distinct version ever recorded for this agent
-    (most-recent-created first), each diffed against whichever version came
-    immediately before it in time — the oldest entry is the prompt as it
-    stood before any fix was ever applied, shown as-is with no diff. Because
-    the version list is content-addressed (see ``_record_prompt_version``),
-    every row — including ones already superseded and then brought back —
-    is restorable via the same action, and "current" is whichever row's text
-    matches what's live right now, not necessarily the newest row.
-    """
-    rows = []
-    total = len(prompt_versions)
-    for i, version in enumerate(prompt_versions):
-        predecessor = prompt_versions[i + 1] if i + 1 < total else None
-        rows.append(
-            {
-                "version": version,
-                "ordinal": total - i,
-                "is_current": version.system_prompt == current_system_prompt,
-                "diff_blocks": (
-                    _diff_blocks(predecessor.system_prompt, version.system_prompt)
-                    if predecessor is not None
-                    else None
-                ),
-            }
-        )
-    return rows
-
-
-def _worst_severity(cluster: Cluster, verdicts: list[Verdict]) -> str:
-    """Mirrors ``report/terminal.py``'s ``_worst_severity`` — same ranking, so
-    the CLI report and the dashboard never disagree on cluster ordering."""
-    weights = [
-        SEVERITY_WEIGHT[v.severity]
-        for v in verdicts
-        if not v.passed and v.node_id in cluster.member_node_ids
-    ]
-    if not weights:
-        return "minor"
-    best = max(weights)
-    return next(sev for sev, weight in SEVERITY_WEIGHT.items() if weight == best)
-
-
-def _conversation_verdicts_by_leaf(verdicts: list[Verdict]) -> dict[str, list[Verdict]]:
-    """Mirrors ``report/terminal.py``'s ``_conversation_verdicts_by_leaf`` —
-    same grouping (by the persona chain's leaf node id), so the CLI report
-    and the dashboard never disagree on how conversation-scoped verdicts are
-    organized."""
-    grouped: dict[str, list[Verdict]] = {}
-    for verdict in verdicts:
-        if verdict.scope == "conversation":
-            grouped.setdefault(verdict.node_id, []).append(verdict)
-    return grouped
-
-
-def _ranked_clusters(clusters: list[Cluster], verdicts: list[Verdict]) -> list[dict]:
-    """Clusters worst-severity-first then largest-first, each paired with its
-    severity — pre-computed here so the template just iterates, no logic."""
-    ranked = sorted(
-        clusters,
-        key=lambda c: (SEVERITY_WEIGHT[_worst_severity(c, verdicts)], len(c.member_node_ids)),
-        reverse=True,
-    )
-    return [{"cluster": c, "severity": _worst_severity(c, verdicts)} for c in ranked]
-
-
 def _execute_run(
     *,
     db_path: str,
@@ -401,221 +233,6 @@ def _execute_run(
     finally:
         with _live_trees_lock:
             _live_trees.pop(run_id, None)
-
-
-def _sse(event: str, html: str) -> str:
-    data = "\n".join(f"data: {line}" for line in html.splitlines() or [""])
-    return f"event: {event}\n{data}\n\n"
-
-
-@dataclass
-class _EventTick:
-    """One poll of the live loop's state, built once per iteration and handed
-    to every panel's cadence/context callables so they all see a consistent
-    snapshot (the tree can otherwise keep growing mid-iteration)."""
-
-    tree: ConversationTree | None
-    node_count: int
-    run: Run | None
-    status: str
-    is_terminal: bool
-    # Populated only when is_terminal — the persisted, final version of the
-    # same data the terminal panels (reliability/clusters/transcripts) render.
-    final_tree: ConversationTree | None = None
-    final_verdicts: list[Verdict] = field(default_factory=list)
-    ranked_clusters: list[dict] = field(default_factory=list)
-    run_provider: str = ""
-    locked_cluster_ids: set[str] = field(default_factory=set)
-
-
-@dataclass
-class _LivePanel:
-    """One entry in the live loop's registry: what event to push, which
-    template renders it, when it fires (``cadence``), and what to render it
-    with (``context_builder``). Adding a new live panel later is exactly
-    "append one descriptor here" — the loop below has no per-panel branches,
-    so a panel left out of this list can never accidentally end up in the
-    live loop."""
-
-    event: str
-    template: str
-    cadence: Callable[[_EventTick], bool]
-    context_builder: Callable[[_EventTick], dict[str, Any] | list[dict[str, Any]]]
-    # Only the failure panel needs this: each new failure_row.html render is
-    # prefixed with an out-of-band delete of the feed's "No failures yet."
-    # placeholder (a beforeend swap only ever appends, so it never clears
-    # that placeholder on its own).
-    decorate: Callable[[str], str] | None = None
-
-
-def _build_event_tick(run_id: str, db_path: str) -> _EventTick:
-    tree = _live_trees.get(run_id)
-    node_count = len(tree.nodes()) if tree is not None else 0
-    with SqliteStore(db_path) as store:
-        run = store.get_run(run_id)
-    status = run.status if run is not None else "pending"
-    tick = _EventTick(
-        tree=tree,
-        node_count=node_count,
-        run=run,
-        status=status,
-        is_terminal=status in ("completed", "failed"),
-    )
-    if tick.is_terminal:
-        with SqliteStore(db_path) as store:
-            final_run, final_tree, final_verdicts, final_clusters = _load_bundle(store, run_id)
-            locked = _locked_cluster_ids(store, final_run.agent_spec.name)
-        tick.final_tree = final_tree
-        tick.final_verdicts = final_verdicts
-        tick.ranked_clusters = _ranked_clusters(final_clusters, final_verdicts)
-        tick.run_provider = final_run.provider
-        tick.locked_cluster_ids = locked
-    return tick
-
-
-def _make_live_panels(run_id: str) -> list[_LivePanel]:
-    """Build this run's panel registry. Bound to closures over a few
-    per-connection trackers (``seen``/``last_node_count``/``last_status``) so
-    each SSE connection gets its own bookkeeping."""
-    seen: set[str] = set()
-    last_node_count = 0
-    last_status: str | None = None
-
-    def reliability_live_cadence(tick: _EventTick) -> bool:
-        nonlocal last_node_count
-        # The gauge's initial render is a snapshot from whenever the page was
-        # loaded; without this, it never moves again until the one terminal
-        # push below, so a run can sit there reading 100% (or whatever the
-        # very first node scored) for its entire duration. Re-score and push
-        # every time the live tree gains a node, so it tracks the run instead
-        # of a first-paint snapshot.
-        if tick.tree is None or tick.node_count == last_node_count:
-            return False
-        last_node_count = tick.node_count
-        return True
-
-    def reliability_live_context(tick: _EventTick) -> dict[str, Any]:
-        return {
-            "run_id": run_id,
-            "reliability": score_run(tick.tree.nodes(), tick.tree.all_verdicts()),
-        }
-
-    def failure_cadence(tick: _EventTick) -> bool:
-        return tick.tree is not None and any(v.id not in seen for v in tick.tree.failures())
-
-    def failure_contexts(tick: _EventTick) -> list[dict[str, Any]]:
-        contexts = []
-        for verdict in tick.tree.failures():
-            if verdict.id in seen:
-                continue
-            seen.add(verdict.id)
-            contexts.append({"verdict": verdict, "node": tick.tree.get(verdict.node_id)})
-        return contexts
-
-    def status_cadence(tick: _EventTick) -> bool:
-        nonlocal last_status
-        if tick.status == last_status:
-            return False
-        last_status = tick.status
-        return True
-
-    def status_context(tick: _EventTick) -> dict[str, Any]:
-        return {"run": tick.run}
-
-    def terminal_cadence(tick: _EventTick) -> bool:
-        return tick.is_terminal
-
-    def reliability_final_context(tick: _EventTick) -> dict[str, Any]:
-        return {
-            "run_id": run_id,
-            "reliability": score_run(tick.final_tree.nodes(), tick.final_verdicts),
-        }
-
-    def clusters_context(tick: _EventTick) -> dict[str, Any]:
-        return {
-            "ranked_clusters": tick.ranked_clusters,
-            "run_id": run_id,
-            "run_provider": tick.run_provider,
-            "locked_cluster_ids": tick.locked_cluster_ids,
-        }
-
-    def transcripts_context(tick: _EventTick) -> dict[str, Any]:
-        return {
-            "ranked_clusters": tick.ranked_clusters,
-            "tree": tick.final_tree,
-            "failures": [v for v in tick.final_verdicts if not v.passed],
-        }
-
-    def near_misses_context(tick: _EventTick) -> dict[str, Any]:
-        return {"near_misses": near_miss_ranking(tick.final_tree.nodes(), tick.final_verdicts)}
-
-    def conversation_verdicts_context(tick: _EventTick) -> dict[str, Any]:
-        return {
-            "tree": tick.final_tree,
-            "conversation_groups": _conversation_verdicts_by_leaf(tick.final_verdicts),
-        }
-
-    return [
-        _LivePanel(
-            "reliability", "fragments/reliability_gauge.html",
-            reliability_live_cadence, reliability_live_context,
-        ),
-        _LivePanel(
-            "failure", "fragments/failure_row.html",
-            failure_cadence, failure_contexts,
-            decorate=lambda html: '<div id="no-failures" hx-swap-oob="delete"></div>' + html,
-        ),
-        _LivePanel("status", "fragments/status_badge.html", status_cadence, status_context),
-        # Terminal-only: fire once, together, the instant the run finishes.
-        _LivePanel(
-            "reliability", "fragments/reliability_gauge.html",
-            terminal_cadence, reliability_final_context,
-        ),
-        _LivePanel("clusters", "fragments/cluster_table.html", terminal_cadence, clusters_context),
-        # Representative Transcripts is a top-level block, not swapped by id
-        # like the gauge/cluster table above — clustering (and thus which
-        # nodes are "representative") only exists once the run is done, so
-        # without this push the section stays absent from the DOM until a
-        # full page reload re-renders it from scratch.
-        _LivePanel(
-            "transcripts", "fragments/transcripts_section.html",
-            terminal_cadence, transcripts_context,
-        ),
-        # Near-misses and conversation-level verdicts (Phase C6) are also
-        # terminal-only, same reasoning as clusters/transcripts above: a
-        # conversation verdict only attaches once its whole persona chain
-        # finishes, and re-ranking near-misses mid-run would churn the list
-        # on every node instead of settling once, at the end.
-        _LivePanel(
-            "near-misses", "fragments/near_miss_panel.html",
-            terminal_cadence, near_misses_context,
-        ),
-        _LivePanel(
-            "conversation-verdicts", "fragments/conversation_verdicts_section.html",
-            terminal_cadence, conversation_verdicts_context,
-        ),
-    ]
-
-
-def _run_events(run_id: str, db_path: str) -> Iterator[str]:
-    panels = _make_live_panels(run_id)
-    while True:
-        tick = _build_event_tick(run_id, db_path)
-        for panel in panels:
-            if not panel.cadence(tick):
-                continue
-            contexts = panel.context_builder(tick)
-            if isinstance(contexts, dict):
-                contexts = [contexts]
-            for context in contexts:
-                html = templates.get_template(panel.template).render(**context)
-                if panel.decorate is not None:
-                    html = panel.decorate(html)
-                yield _sse(panel.event, html)
-        if tick.is_terminal:
-            return
-        time.sleep(0.3)
-        time.sleep(0.3)
 
 
 def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
@@ -796,7 +413,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             if store.get_run(run_id) is None:
                 raise HTTPException(status_code=404, detail=f"No run found with id '{run_id}'.")
         return StreamingResponse(
-            _run_events(run_id, app.state.db_path), media_type="text/event-stream"
+            _run_events(run_id, app.state.db_path, templates), media_type="text/event-stream"
         )
 
     @app.post("/runs/{run_id}/clusters/{cluster_id}/lock", response_class=HTMLResponse)

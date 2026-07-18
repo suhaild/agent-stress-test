@@ -26,8 +26,8 @@ from agent_stress_test.orchestration.reliability import (
     ReliabilityReport,
     near_miss_ranking,
 )
-from agent_stress_test.orchestration.search import SEVERITY_WEIGHT
 from agent_stress_test.orchestration.tree import ConversationTree
+from agent_stress_test.report.shared import _conversation_verdicts_by_leaf, _ranked_clusters
 
 _SEVERITY_STYLE = {"critical": "bold red", "major": "yellow", "minor": "cyan"}
 _ROLE_STYLE = {"system": "dim italic", "user": "bold magenta", "assistant": "bold white"}
@@ -110,29 +110,11 @@ def render_reliability(console: Console, run: Run, report: ReliabilityReport) ->
     )
 
 
-def _worst_severity(cluster: Cluster, verdicts: list[Verdict]) -> str:
-    weights = [
-        SEVERITY_WEIGHT[v.severity]
-        for v in verdicts
-        if not v.passed and v.node_id in cluster.member_node_ids
-    ]
-    if not weights:
-        return "minor"
-    best = max(weights)
-    return next(sev for sev, weight in SEVERITY_WEIGHT.items() if weight == best)
-
-
 def render_clusters(console: Console, clusters: list[Cluster], verdicts: list[Verdict]) -> None:
     """A ranked table of failure clusters (worst severity first, then size)."""
     if not clusters:
         console.print(Panel("No failure clusters - no confirmed failures.", border_style="green"))
         return
-
-    ranked = sorted(
-        clusters,
-        key=lambda c: (SEVERITY_WEIGHT[_worst_severity(c, verdicts)], len(c.member_node_ids)),
-        reverse=True,
-    )
 
     table = Table(title="Failure Clusters", show_lines=False)
     table.add_column("Label", style="bold")
@@ -140,8 +122,8 @@ def render_clusters(console: Console, clusters: list[Cluster], verdicts: list[Ve
     table.add_column("Members", justify="right")
     table.add_column("Representative node", overflow="fold")
 
-    for cluster in ranked:
-        severity = _worst_severity(cluster, verdicts)
+    for entry in _ranked_clusters(clusters, verdicts):
+        cluster, severity = entry["cluster"], entry["severity"]
         table.add_row(
             cluster.label,
             Text(severity, style=_SEVERITY_STYLE[severity]),
@@ -237,18 +219,6 @@ def render_near_misses(console: Console, near_misses: list[NearMiss]) -> None:
         proximity.append("-" * (bar_width - filled), style="dim")
         table.add_row(near_miss.tactic or "-", proximity, near_miss.node_id)
     console.print(table)
-
-
-def _conversation_verdicts_by_leaf(verdicts: list[Verdict]) -> dict[str, list[Verdict]]:
-    """Group ``scope="conversation"`` verdicts by their leaf node id — see
-    ``Verdict.scope``'s docstring: that id is the persona chain's LEAF node,
-    since ``tree.path_to_root()`` of it reconstructs exactly the conversation
-    each group judged."""
-    grouped: dict[str, list[Verdict]] = {}
-    for verdict in verdicts:
-        if verdict.scope == "conversation":
-            grouped.setdefault(verdict.node_id, []).append(verdict)
-    return grouped
 
 
 def render_conversation_verdicts(

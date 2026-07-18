@@ -178,14 +178,15 @@ def test_no_hardcoded_customer_support_framing_remains():
     # prompt (with its hardcoded "customer-support agent" framing) is gone.
     import pathlib
 
-    src = (
+    judge_pkg = (
         pathlib.Path(__file__).resolve().parents[1]
         / "src"
         / "agent_stress_test"
         / "reasoning"
-        / "judge.py"
+        / "judge"
     )
-    assert "customer-support" not in src.read_text(encoding="utf-8")
+    for module in judge_pkg.glob("*.py"):
+        assert "customer-support" not in module.read_text(encoding="utf-8")
 
 
 # --- Hand-labeled accuracy set (rubric -> GEval score -> verdict -> tier) --
