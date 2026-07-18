@@ -5,8 +5,9 @@ This is the only module in the codebase allowed to import httpx.
 
 import httpx
 
-from agent_stress_test.models import AgentResponse, Message, Step
+from agent_stress_test.models import AgentResponse, Message
 from agent_stress_test.ports import TargetAgent
+from agent_stress_test.targets.wire_protocol import _build_wire_payload, _parse_wire_response
 
 
 class HttpAgent(TargetAgent):
@@ -29,15 +30,11 @@ class HttpAgent(TargetAgent):
         self._headers = headers
 
     def respond(self, conversation: list[Message]) -> AgentResponse:
-        payload = {"messages": [m.model_dump(exclude={"cache"}) for m in conversation]}
         response = httpx.post(
             self._url,
-            json=payload,
+            json=_build_wire_payload(conversation),
             headers=self._headers,
             timeout=self._timeout,
         )
         response.raise_for_status()
-        body = response.json()
-        trace_data = body.get("trace")
-        trace = [Step(**step) for step in trace_data] if trace_data else None
-        return AgentResponse(final_reply=body["reply"], trace=trace)
+        return _parse_wire_response(response.json())

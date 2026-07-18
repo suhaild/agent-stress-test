@@ -30,7 +30,7 @@ def _normalize_for_diff(text: str) -> list[str]:
     return [s.strip() for s in _SENTENCE_SEGMENTER.segment(collapsed) if s.strip()]
 
 
-def _diff_blocks(old_text: str, new_text: str) -> list[dict]:
+def diff_blocks(old_text: str, new_text: str) -> list[dict]:
     """Groups a unified diff into template-ready blocks for a browser
     audience, not a `git diff` reader: each contiguous run of unchanged
     sentences becomes one ``{"kind": "context", "text": ...}`` row (labeled
@@ -77,7 +77,7 @@ def _diff_blocks(old_text: str, new_text: str) -> list[dict]:
     return blocks
 
 
-def _record_prompt_version(
+def record_prompt_version(
     store: SqliteStore, agent_spec_name: str, system_prompt: str
 ) -> None:
     """Content-addressed history: records ``system_prompt`` as a version only
@@ -97,14 +97,14 @@ def _record_prompt_version(
         )
 
 
-def _prompt_version_history(
+def prompt_version_history(
     current_system_prompt: str, prompt_versions: list[SystemPromptVersion]
 ) -> list[dict]:
     """One row per distinct version ever recorded for this agent
     (most-recent-created first), each diffed against whichever version came
     immediately before it in time — the oldest entry is the prompt as it
     stood before any fix was ever applied, shown as-is with no diff. Because
-    the version list is content-addressed (see ``_record_prompt_version``),
+    the version list is content-addressed (see ``record_prompt_version``),
     every row — including ones already superseded and then brought back —
     is restorable via the same action, and "current" is whichever row's text
     matches what's live right now, not necessarily the newest row.
@@ -119,7 +119,7 @@ def _prompt_version_history(
                 "ordinal": total - i,
                 "is_current": version.system_prompt == current_system_prompt,
                 "diff_blocks": (
-                    _diff_blocks(predecessor.system_prompt, version.system_prompt)
+                    diff_blocks(predecessor.system_prompt, version.system_prompt)
                     if predecessor is not None
                     else None
                 ),

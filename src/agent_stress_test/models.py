@@ -358,6 +358,12 @@ class Node(BaseModel):
     parent_id: str | None = None
     messages: list[Message]
     target_reply: str
+    # Which branch produced this node — a bundled tactic name under
+    # GreedyBestFirstSearch, or a persona name (bundled or profile-sourced)
+    # under DeepEvalConversationSearch (see orchestration/deepeval_search.py's
+    # DeepEvalConversationSearch docstring). The field predates the persona
+    # engine and was never renamed since the two happen to share the same 5
+    # bundled names by default.
     tactic: str | None = None
     instability_score: float | None = None
     verdict_id: str | None = None

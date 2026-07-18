@@ -8,25 +8,13 @@ writes it back to an AgentSpec automatically.
 """
 
 import json
-import re
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ValidationError
 
 from agent_stress_test.models import AgentSpec, Message, Rule
 from agent_stress_test.ports import LLMProvider
-
-# Real models routinely wrap their JSON output in a markdown code fence even
-# when told to respond with ONLY the JSON object (Claude does this reliably,
-# confirmed against a live model) — model_validate_json() can't parse the
-# fence's backticks, so it's stripped before validation rather than treated
-# as a parse failure. Mirrors judge.py's identical helper for LLMJudge.
-_JSON_FENCE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
-
-
-def _strip_json_fence(raw: str) -> str:
-    match = _JSON_FENCE.match(raw.strip())
-    return match.group(1).strip() if match else raw
+from agent_stress_test.reasoning.json_utils import _strip_json_fence
 
 _REMEDIATION_SYSTEM = (
     "You are helping harden a support agent's system prompt so it stops violating "
@@ -69,17 +57,17 @@ class RemediationSuggester:
         self._llm = llm
 
     def suggest(
-        self, spec: AgentSpec, rule: Rule, violating_reply: str, verdict_reason: str
+        self, agent_spec: AgentSpec, rule: Rule, violating_reply: str, verdict_reason: str
     ) -> RemediationSuggestion:
-        raw = self._llm.complete(self._prompt(spec, rule, violating_reply, verdict_reason))
-        return self._parse(raw, fallback_prompt=spec.system_prompt)
+        raw = self._llm.complete(self._prompt(agent_spec, rule, violating_reply, verdict_reason))
+        return self._parse(raw, fallback_prompt=agent_spec.system_prompt)
 
     @staticmethod
     def _prompt(
-        spec: AgentSpec, rule: Rule, violating_reply: str, verdict_reason: str
+        agent_spec: AgentSpec, rule: Rule, violating_reply: str, verdict_reason: str
     ) -> list[Message]:
         user = (
-            f'Current system prompt:\n"""\n{spec.system_prompt}\n"""\n\n'
+            f'Current system prompt:\n"""\n{agent_spec.system_prompt}\n"""\n\n'
             f"Violated rule ({rule.severity}): {rule.text}\n\n"
             f'Agent reply that violated it:\n"""\n{violating_reply}\n"""\n\n'
             f"Why it violated the rule: {verdict_reason}\n\n"

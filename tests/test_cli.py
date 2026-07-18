@@ -4,10 +4,10 @@ import re
 import pytest
 
 from agent_stress_test.cli import (
-    _DEFAULT_SIM_MODEL,
-    _resolve_sim_provider_name,
-    _resolve_tactics,
+    DEFAULT_SIM_MODEL,
     main,
+    resolve_sim_provider_name,
+    resolve_tactics,
 )
 from agent_stress_test.config import load_agent_spec
 from agent_stress_test.models import ProfilePersona, StressProfile
@@ -22,18 +22,18 @@ def _args(**overrides) -> argparse.Namespace:
 
 
 def test_sim_provider_defaults_to_cheap_model_for_a_real_provider():
-    assert _resolve_sim_provider_name(_args(provider="anthropic/claude-sonnet-5")) == (
-        _DEFAULT_SIM_MODEL
+    assert resolve_sim_provider_name(_args(provider="anthropic/claude-sonnet-5")) == (
+        DEFAULT_SIM_MODEL
     )
 
 
 def test_sim_provider_stays_fake_when_main_provider_is_fake():
-    assert _resolve_sim_provider_name(_args(provider="fake")) == "fake"
+    assert resolve_sim_provider_name(_args(provider="fake")) == "fake"
 
 
 def test_sim_provider_explicit_override_wins():
     assert (
-        _resolve_sim_provider_name(
+        resolve_sim_provider_name(
             _args(provider="anthropic/claude-sonnet-5", sim_provider="openai/gpt-4o")
         )
         == "openai/gpt-4o"
@@ -41,7 +41,7 @@ def test_sim_provider_explicit_override_wins():
 
 
 def test_resolve_tactics_with_no_arg_returns_only_bundled_tactics_by_default():
-    assert set(_resolve_tactics(None)) == {
+    assert set(resolve_tactics(None)) == {
         "self-contradiction",
         "urgency-pressure",
         "hostile",
@@ -52,31 +52,31 @@ def test_resolve_tactics_with_no_arg_returns_only_bundled_tactics_by_default():
 
 def test_resolve_tactics_rejects_a_name_outside_the_bundled_registry():
     with pytest.raises(ValueError, match="Unknown tactic"):
-        _resolve_tactics("symptom-minimizer")
+        resolve_tactics("symptom-minimizer")
 
 
 def test_resolve_tactics_accepts_an_extra_valid_name():
     # A profile-sourced persona name — accepted only because it's passed as
     # extra_valid, exactly what build_runner()'s callers do once they've
     # peeked at the spec's own StressProfile.
-    assert _resolve_tactics("symptom-minimizer", extra_valid=["symptom-minimizer"]) == [
+    assert resolve_tactics("symptom-minimizer", extra_valid=["symptom-minimizer"]) == [
         "symptom-minimizer"
     ]
 
 
 def test_resolve_tactics_still_rejects_a_name_not_in_bundled_or_extra():
     with pytest.raises(ValueError, match="Unknown tactic"):
-        _resolve_tactics("nonexistent-persona", extra_valid=["symptom-minimizer"])
+        resolve_tactics("nonexistent-persona", extra_valid=["symptom-minimizer"])
 
 
 def test_resolve_tactics_with_no_arg_includes_extra_valid_by_default():
-    resolved = _resolve_tactics(None, extra_valid=["symptom-minimizer"])
+    resolved = resolve_tactics(None, extra_valid=["symptom-minimizer"])
     assert "symptom-minimizer" in resolved
     assert "hostile" in resolved
 
 
 def test_resolve_tactics_extra_valid_does_not_duplicate_a_bundled_name():
-    resolved = _resolve_tactics(None, extra_valid=["hostile"])
+    resolved = resolve_tactics(None, extra_valid=["hostile"])
     assert resolved.count("hostile") == 1
 
 

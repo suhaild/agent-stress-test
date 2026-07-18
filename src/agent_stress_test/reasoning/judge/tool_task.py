@@ -36,6 +36,40 @@ def _metric_test_case(response: AgentResponse, conversation: list[Message] | Non
     )
 
 
+def _measure_node_metric(
+    metric, test_case: LLMTestCase, *, run_id: str, node_id: str, scope: str, label: str
+) -> Verdict:
+    """Shared measure/verdict-building step both node-level metric judges
+    below use — same conservative-pass-on-malformed-output contract as the
+    conversation-level metrics (``_measure_conversation_metric``)."""
+    try:
+        metric.measure(test_case, _show_indicator=False)
+        passed, reason, confidence, severity = (
+            metric.success,
+            metric.reason,
+            _confidence_from_score(metric),
+            severity_from_score(metric.score, threshold=metric.threshold),
+        )
+    except ValidationError:
+        passed, reason, confidence, severity = (
+            True,
+            f"{label} metric returned malformed output; defaulting to pass.",
+            0.0,
+            "minor",
+        )
+    return Verdict(
+        run_id=run_id,
+        node_id=node_id,
+        passed=passed,
+        rule_id=None,
+        reason=reason,
+        tier="llm",
+        confidence=confidence,
+        severity=severity,
+        scope=scope,
+    )
+
+
 class ToolArgumentJudge(Judge):
     """Node-level judge: DeepEval's ``ArgumentCorrectnessMetric`` over the
     node's structured tool calls (Phase C1).
@@ -65,32 +99,14 @@ class ToolArgumentJudge(Judge):
         metric = ArgumentCorrectnessMetric(
             model=self._model, threshold=METRIC_PASS_THRESHOLD, async_mode=False
         )
-        try:
-            metric.measure(_metric_test_case(response, conversation), _show_indicator=False)
-            passed, reason, confidence, severity = (
-                metric.success,
-                metric.reason,
-                _confidence_from_score(metric),
-                severity_from_score(metric.score, threshold=metric.threshold),
-            )
-        except ValidationError:
-            passed, reason, confidence, severity = (
-                True,
-                "Tool-argument metric returned malformed output; defaulting to pass.",
-                0.0,
-                "minor",
-            )
         return [
-            Verdict(
+            _measure_node_metric(
+                metric,
+                _metric_test_case(response, conversation),
                 run_id=run_id,
                 node_id=node_id,
-                passed=passed,
-                rule_id=None,
-                reason=reason,
-                tier="llm",
-                confidence=confidence,
-                severity=severity,
                 scope="tool",
+                label="Tool-argument",
             )
         ]
 
@@ -123,32 +139,14 @@ class TaskCompletionJudge(Judge):
         metric = TaskCompletionMetric(
             model=self._model, threshold=METRIC_PASS_THRESHOLD, async_mode=False
         )
-        try:
-            metric.measure(_metric_test_case(response, conversation), _show_indicator=False)
-            passed, reason, confidence, severity = (
-                metric.success,
-                metric.reason,
-                _confidence_from_score(metric),
-                severity_from_score(metric.score, threshold=metric.threshold),
-            )
-        except ValidationError:
-            passed, reason, confidence, severity = (
-                True,
-                "Task-completion metric returned malformed output; defaulting to pass.",
-                0.0,
-                "minor",
-            )
         return [
-            Verdict(
+            _measure_node_metric(
+                metric,
+                _metric_test_case(response, conversation),
                 run_id=run_id,
                 node_id=node_id,
-                passed=passed,
-                rule_id=None,
-                reason=reason,
-                tier="llm",
-                confidence=confidence,
-                severity=severity,
                 scope="task",
+                label="Task-completion",
             )
         ]
 

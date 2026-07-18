@@ -25,7 +25,7 @@ from agent_stress_test.orchestration.reliability import (
 )
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.providers.fake import FakeLLMProvider
-from agent_stress_test.report.dashboard.server import _diff_blocks, create_app, templates
+from agent_stress_test.report.dashboard.server import create_app, diff_blocks, templates
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 _STATUS_RE = re.compile(r'data-status="(\w+)"')
@@ -140,7 +140,7 @@ def test_sse_events_stream_emits_a_status_event(tmp_path):
     # Robust whether the fake-provider run was still going or already
     # finished by the time the stream connected — either way the generator
     # always emits at least one status frame reflecting the DB's current
-    # state (see server.py's `_run_events`).
+    # state (see live_events.py's `stream_run_events`).
     assert "event: status" in "".join(chunks)
 
 
@@ -175,7 +175,7 @@ def test_diff_blocks_ignores_incidental_rewrapping():
         "the 30-day return window when discussing returns."
     )
 
-    blocks = _diff_blocks(old, new)
+    blocks = diff_blocks(old, new)
 
     changes = [b for b in blocks if b["kind"] == "change"]
     assert len(changes) == 1
@@ -192,7 +192,7 @@ def test_diff_blocks_merges_consecutive_context_sentences_into_one_row():
     old = "Be concise, friendly, and honest. If unsure, say so. Never overpromise. Old closer."
     new = "Be concise, friendly, and honest. If unsure, say so. Never overpromise. New closer."
 
-    blocks = _diff_blocks(old, new)
+    blocks = diff_blocks(old, new)
 
     context_blocks = [b for b in blocks if b["kind"] == "context"]
     assert len(context_blocks) == 1
@@ -219,7 +219,7 @@ def test_diff_blocks_label_changes_as_previous_and_suggested_not_raw_diff_marker
     changed[18] = "Sierra replying."  # far enough away to force a separate hunk
     new = " ".join(changed)
 
-    blocks = _diff_blocks(old, new)
+    blocks = diff_blocks(old, new)
 
     assert not any("@@" in b.get("text", "") for b in blocks)
     assert not any(b.get("text", "").startswith(("---", "+++")) for b in blocks)
@@ -345,7 +345,7 @@ def test_suggest_fix_shows_apply_button_when_a_real_change_is_proposed(
         ]
     )
     monkeypatch.setattr(
-        "agent_stress_test.report.dashboard.server._build_provider", lambda name: scripted
+        "agent_stress_test.report.dashboard.server.build_provider", lambda name: scripted
     )
     db_path = tmp_path / "runs.sqlite"
     run_id, cluster_id = _seed_locked_ready_run(db_path, sample_agent_spec_path)
@@ -912,7 +912,7 @@ def test_profile_page_unknown_agent_404s(tmp_path):
 def test_generate_profile_persists_and_renders_the_editor(tmp_path, monkeypatch):
     scripted = FakeLLMProvider(responses=[_TRIAGE_PROFILE_JSON])
     monkeypatch.setattr(
-        "agent_stress_test.report.dashboard.server._build_provider", lambda name: scripted
+        "agent_stress_test.report.dashboard.server.build_provider", lambda name: scripted
     )
     client = _client(tmp_path)
 
@@ -933,7 +933,7 @@ def test_generate_profile_persists_and_renders_the_editor(tmp_path, monkeypatch)
 def test_generate_profile_bad_llm_output_400s_cleanly(tmp_path, monkeypatch):
     scripted = FakeLLMProvider(responses=["not json at all"])
     monkeypatch.setattr(
-        "agent_stress_test.report.dashboard.server._build_provider", lambda name: scripted
+        "agent_stress_test.report.dashboard.server.build_provider", lambda name: scripted
     )
     client = _client(tmp_path)
 
@@ -947,7 +947,7 @@ def test_generate_profile_bad_llm_output_400s_cleanly(tmp_path, monkeypatch):
 def test_editing_the_profile_saves_changes_and_supports_removing_a_row(tmp_path, monkeypatch):
     scripted = FakeLLMProvider(responses=[_TRIAGE_PROFILE_JSON])
     monkeypatch.setattr(
-        "agent_stress_test.report.dashboard.server._build_provider", lambda name: scripted
+        "agent_stress_test.report.dashboard.server.build_provider", lambda name: scripted
     )
     client = _client(tmp_path)
     client.post("/agent-specs/sample_support/profile/generate", data={"provider": "fake"})
@@ -1001,7 +1001,7 @@ def test_personas_picker_reloads_per_agent_reflecting_that_agent_own_profile(
 ):
     scripted = FakeLLMProvider(responses=[_TRIAGE_PROFILE_JSON])
     monkeypatch.setattr(
-        "agent_stress_test.report.dashboard.server._build_provider", lambda name: scripted
+        "agent_stress_test.report.dashboard.server.build_provider", lambda name: scripted
     )
     client = _client(tmp_path)
     client.post("/agent-specs/sample_support/profile/generate", data={"provider": "fake"})
@@ -1015,16 +1015,16 @@ def test_personas_picker_reloads_per_agent_reflecting_that_agent_own_profile(
 
 def test_run_with_a_profile_sourced_tactic_completes_end_to_end(tmp_path, monkeypatch):
     # Generate a profile through a scripted provider, then restore the real
-    # _build_provider before actually starting the run — the run's own
+    # build_provider before actually starting the run — the run's own
     # adversary/target calls must go through the genuine ShapedFakeLLM
     # ("fake"), not the single-scripted-response provider used only to
     # generate the profile itself.
     import agent_stress_test.report.dashboard.server as server_mod
 
-    original_build_provider = server_mod._build_provider
+    original_build_provider = server_mod.build_provider
     scripted = FakeLLMProvider(responses=[_TRIAGE_PROFILE_JSON])
     monkeypatch.setattr(
-        "agent_stress_test.report.dashboard.server._build_provider", lambda name: scripted
+        "agent_stress_test.report.dashboard.server.build_provider", lambda name: scripted
     )
     client = _client(tmp_path)
     generate_response = client.post(
@@ -1033,7 +1033,7 @@ def test_run_with_a_profile_sourced_tactic_completes_end_to_end(tmp_path, monkey
     assert generate_response.status_code == 200
 
     monkeypatch.setattr(
-        "agent_stress_test.report.dashboard.server._build_provider", original_build_provider
+        "agent_stress_test.report.dashboard.server.build_provider", original_build_provider
     )
 
     run_id = _start_run(client, tactics="symptom-minimizer", budget="1")

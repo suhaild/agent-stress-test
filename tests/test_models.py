@@ -22,17 +22,7 @@ from agent_stress_test.models import (
     ToolUseBlock,
     Verdict,
 )
-
-
-def make_agent_spec(**overrides) -> AgentSpec:
-    data = {
-        "name": "test_agent",
-        "system_prompt": "You are a helpful assistant.",
-        "tools": [ToolSpec(name="lookup", description="Looks things up.")],
-        "rules": [Rule(id="no-lie", text="Never lie.", severity="major")],
-    }
-    data.update(overrides)
-    return AgentSpec(**data)
+from tests.conftest import make_agent_spec
 
 
 def test_message_valid():
@@ -75,23 +65,88 @@ def test_message_accepts_tool_role():
     assert msg.role == "tool"
 
 
-def test_message_rejects_unknown_content_block_type():
+@pytest.mark.parametrize(
+    "model_cls,bad_kwargs",
+    [
+        pytest.param(
+            Message,
+            dict(role="assistant", content=[{"type": "bogus", "text": "hi"}]),
+            id="message-unknown-content-block-type",
+        ),
+        pytest.param(
+            Message,
+            dict(role="assistant", content=[{"type": "tool_use", "id": "call_1"}]),  # no name
+            id="message-content-block-missing-required-field",
+        ),
+        pytest.param(
+            Message, dict(role="wizard", content="hello"), id="message-invalid-role"
+        ),
+        pytest.param(
+            Rule,
+            dict(id="r1", text="Be nice.", severity="catastrophic"),
+            id="rule-bad-severity",
+        ),
+        pytest.param(
+            AgentSpec,
+            dict(name="x", system_prompt="", tools=[], rules=[Rule(id="r", text="a rule")]),
+            id="agent-spec-missing-system-prompt",
+        ),
+        pytest.param(
+            AgentSpec,
+            dict(name="x", system_prompt="hi", tools=[], rules=[]),
+            id="agent-spec-empty-rules",
+        ),
+        pytest.param(
+            Verdict,
+            dict(
+                run_id="run-1",
+                node_id="node-1",
+                passed=True,
+                reason="fine",
+                tier="tier-3-llm-council",
+                confidence=1.0,
+                severity="minor",
+            ),
+            id="verdict-bad-tier",
+        ),
+        pytest.param(
+            Verdict,
+            dict(
+                run_id="run-1",
+                node_id="node-1",
+                passed=True,
+                reason="fine",
+                tier="rules",
+                confidence=1.5,
+                severity="minor",
+            ),
+            id="verdict-confidence-out-of-range",
+        ),
+        pytest.param(
+            Verdict,
+            dict(
+                run_id="run-1",
+                node_id="node-1",
+                passed=True,
+                reason="fine",
+                tier="rules",
+                confidence=1.0,
+                severity="apocalyptic",
+            ),
+            id="verdict-bad-severity",
+        ),
+    ],
+)
+def test_model_rejects_invalid_input(model_cls, bad_kwargs):
     with pytest.raises(ValidationError):
-        Message(role="assistant", content=[{"type": "bogus", "text": "hi"}])
-
-
-def test_message_rejects_content_block_missing_required_field():
-    with pytest.raises(ValidationError):
-        Message(role="assistant", content=[{"type": "tool_use", "id": "call_1"}])  # no name
-
-
-def test_message_invalid_role():
-    with pytest.raises(ValidationError):
-        Message(role="wizard", content="hello")
+        model_cls(**bad_kwargs)
 
 
 def test_agent_spec_valid():
-    spec = make_agent_spec()
+    spec = make_agent_spec(
+        tools=[ToolSpec(name="lookup", description="Looks things up.")],
+        rules=[Rule(id="no-lie", text="Never lie.", severity="major")],
+    )
     assert spec.name == "test_agent"
     assert len(spec.tools) == 1
     assert spec.rules[0].text == "Never lie."
@@ -101,21 +156,6 @@ def test_agent_spec_valid():
 def test_rule_defaults_severity_to_major():
     rule = Rule(id="r1", text="Be nice.")
     assert rule.severity == "major"
-
-
-def test_rule_rejects_bad_severity():
-    with pytest.raises(ValidationError):
-        Rule(id="r1", text="Be nice.", severity="catastrophic")
-
-
-def test_agent_spec_missing_system_prompt():
-    with pytest.raises(ValidationError):
-        AgentSpec(name="x", system_prompt="", tools=[], rules=[Rule(id="r", text="a rule")])
-
-
-def test_agent_spec_empty_rules():
-    with pytest.raises(ValidationError):
-        AgentSpec(name="x", system_prompt="hi", tools=[], rules=[])
 
 
 def test_agent_spec_rejects_extra_field():
@@ -213,45 +253,6 @@ def test_verdict_valid():
     assert verdict.tier == "rules"
     assert verdict.confidence == 1.0
     assert verdict.severity == "critical"
-
-
-def test_verdict_rejects_bad_tier():
-    with pytest.raises(ValidationError):
-        Verdict(
-            run_id="run-1",
-            node_id="node-1",
-            passed=True,
-            reason="fine",
-            tier="tier-3-llm-council",
-            confidence=1.0,
-            severity="minor",
-        )
-
-
-def test_verdict_rejects_confidence_out_of_range():
-    with pytest.raises(ValidationError):
-        Verdict(
-            run_id="run-1",
-            node_id="node-1",
-            passed=True,
-            reason="fine",
-            tier="rules",
-            confidence=1.5,
-            severity="minor",
-        )
-
-
-def test_verdict_rejects_bad_severity():
-    with pytest.raises(ValidationError):
-        Verdict(
-            run_id="run-1",
-            node_id="node-1",
-            passed=True,
-            reason="fine",
-            tier="rules",
-            confidence=1.0,
-            severity="apocalyptic",
-        )
 
 
 def test_cluster_valid():

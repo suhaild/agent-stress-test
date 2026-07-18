@@ -124,7 +124,7 @@ def test_a_migrated_db_loads_and_renders_correctly(tmp_path, sample_agent_spec_p
     unrelated to whether a migration actually preserved usable data (the
     dashboard is the real front end for viewing a run; see cli.py's
     module docstring)."""
-    from agent_stress_test.composition import _load_bundle
+    from agent_stress_test.composition import load_bundle
     from agent_stress_test.orchestration.reliability import score_run
     from agent_stress_test.report.terminal import render_full_report, render_transcript
 
@@ -133,7 +133,7 @@ def test_a_migrated_db_loads_and_renders_correctly(tmp_path, sample_agent_spec_p
     migrate(db_path)
 
     with SqliteStore(str(db_path)) as store:
-        run, tree, verdicts, clusters = _load_bundle(store, run_id)
+        run, tree, verdicts, clusters = load_bundle(store, run_id)
 
     console = Console(record=True, width=120, force_terminal=False)
     render_full_report(

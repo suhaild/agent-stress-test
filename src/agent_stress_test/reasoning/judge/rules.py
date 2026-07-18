@@ -364,7 +364,7 @@ _CHECK_BUILDERS: dict[str, Callable[[Rule], RuleCheck]] = {
 }
 
 
-def build_checks(spec: AgentSpec) -> list[RuleCheck]:
+def build_checks(agent_spec: AgentSpec) -> list[RuleCheck]:
     """Build the deterministic tier-1 checks declared by an AgentSpec's rules.
 
     Generic over any spec: a rule opts into a tier-1 check by setting
@@ -372,4 +372,6 @@ def build_checks(spec: AgentSpec) -> list[RuleCheck]:
     with no `check_type` get no tier-1 check and are judged by the tier-2 LLM
     judge alone.
     """
-    return [_CHECK_BUILDERS[rule.check_type](rule) for rule in spec.rules if rule.check_type]
+    return [
+        _CHECK_BUILDERS[rule.check_type](rule) for rule in agent_spec.rules if rule.check_type
+    ]

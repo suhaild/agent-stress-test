@@ -9,7 +9,7 @@ cheap model backing it changes:
 
 Requires a real ANTHROPIC_API_KEY (loaded from .env via
 ``config.load_settings``) — every call below is a genuine, billed request to
-``composition._DEFAULT_SIM_MODEL`` (the same cheap Haiku model
+``composition.DEFAULT_SIM_MODEL`` (the same cheap Haiku model
 ``build_runner``'s callers already default the adversarial simulator to, and
 now the Phase-C metrics to as well — see runner.py's ``sim_provider`` reuse).
 
@@ -27,7 +27,7 @@ import json
 
 from deepeval.test_case import ConversationalTestCase, Turn
 
-from agent_stress_test.composition import _DEFAULT_SIM_MODEL
+from agent_stress_test.composition import DEFAULT_SIM_MODEL
 from agent_stress_test.config import load_agent_spec, load_settings
 from agent_stress_test.models import AgentResponse, Message
 from agent_stress_test.ports import LLMProvider
@@ -86,7 +86,7 @@ class _CountingProvider(LLMProvider):
 
 
 def _cheap_provider() -> _CountingProvider:
-    return _CountingProvider(LiteLLMProvider(model=_DEFAULT_SIM_MODEL))
+    return _CountingProvider(LiteLLMProvider(model=DEFAULT_SIM_MODEL))
 
 
 def _report(name: str, provider: _CountingProvider) -> dict:
@@ -106,8 +106,8 @@ def _report(name: str, provider: _CountingProvider) -> dict:
 
 def main() -> None:
     load_settings()
-    spec = load_agent_spec(_SPEC_PATH)
-    print(f"Measuring Phase-C metric costs on {_DEFAULT_SIM_MODEL} ...\n")
+    agent_spec = load_agent_spec(_SPEC_PATH)
+    print(f"Measuring Phase-C metric costs on {DEFAULT_SIM_MODEL} ...\n")
     results = []
 
     provider = _cheap_provider()
@@ -130,7 +130,7 @@ def main() -> None:
 
     test_case = ConversationalTestCase(
         turns=[Turn(role=m.role, content=m.content) for m in _CONVERSATION],
-        chatbot_role=spec.purpose or spec.system_prompt,
+        chatbot_role=agent_spec.purpose or agent_spec.system_prompt,
     )
     conversation_judges = {
         "role_adherence": RoleAdherenceJudge,
@@ -144,10 +144,10 @@ def main() -> None:
         results.append(_report(name, provider))
 
     provider = _cheap_provider()
-    ConversationRuleJudge(provider, spec).judge_conversation(
+    ConversationRuleJudge(provider, agent_spec).judge_conversation(
         test_case, run_id="measure", node_id="n"
     )
-    results.append(_report(f"conversation_rule_geval (x{len(spec.rules)} rules)", provider))
+    results.append(_report(f"conversation_rule_geval (x{len(agent_spec.rules)} rules)", provider))
 
     total_cost = sum(r["cost_usd"] for r in results)
     total_calls = sum(r["calls"] for r in results)

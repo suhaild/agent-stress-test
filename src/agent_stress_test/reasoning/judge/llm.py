@@ -42,8 +42,8 @@ class LLMJudge(Judge):
     carrying a reason, a confidence, and a severity.
     """
 
-    def __init__(self, llm: LLMProvider, spec: AgentSpec) -> None:
-        self._rules = list(spec.rules)
+    def __init__(self, llm: LLMProvider, agent_spec: AgentSpec) -> None:
+        self._rules = list(agent_spec.rules)
         model = LLMProviderAsDeepEvalLLM(llm)
         self._metrics = {rule.id: _rule_metric(rule, model) for rule in self._rules}
 
@@ -116,6 +116,6 @@ class TwoTierJudge(Judge):
         )
 
 
-def build_two_tier_judge(spec: AgentSpec, llm: LLMProvider) -> TwoTierJudge:
+def build_two_tier_judge(agent_spec: AgentSpec, llm: LLMProvider) -> TwoTierJudge:
     """Compose the deterministic tier-1 checks with the tier-2 LLM judge."""
-    return TwoTierJudge(RulesJudge(build_checks(spec)), LLMJudge(llm, spec))
+    return TwoTierJudge(RulesJudge(build_checks(agent_spec)), LLMJudge(llm, agent_spec))

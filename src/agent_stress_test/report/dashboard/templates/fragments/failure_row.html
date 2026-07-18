@@ -1,7 +1,7 @@
-{%- from "macros.html" import severity_tag -%}
+{%- from "macros.html" import severity_tag, severity_color -%}
 <div class="log-line rounded-sm px-4 py-3"
      style="background: var(--bg-panel); border: 1px solid var(--wire); border-left: 3px solid
-       {% if verdict.severity == 'critical' %}var(--fail){% elif verdict.severity == 'major' %}var(--warn){% else %}var(--pass){% endif %};">
+       {{ severity_color(verdict.severity) }};">
   <div class="flex items-center justify-between gap-3 mb-1.5">
 {{ severity_tag(verdict.severity) }}
     {% if node and node.tactic %}

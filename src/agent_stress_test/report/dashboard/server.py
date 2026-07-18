@@ -26,14 +26,15 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.templating import Jinja2Templates
 
 from agent_stress_test.composition import (
-    _build_provider,
-    _build_target,
-    _load_bundle,
-    _resolve_sim_provider_name,
-    _resolve_tactics,
+    build_provider,
+    build_target,
     cluster_and_persist,
+    load_bundle,
+    resolve_sim_provider_name,
+    resolve_tactics,
 )
-from agent_stress_test.config import apply_system_prompt, load_agent_spec, load_settings
+from agent_stress_test.config import load_agent_spec, load_settings
+from agent_stress_test.config_writer import apply_system_prompt
 from agent_stress_test.models import AgentSpec, ProfilePersona, Rule, Run, Verdict
 from agent_stress_test.orchestration.regression import (
     RegressionRunner,
@@ -54,17 +55,17 @@ from agent_stress_test.reasoning.profiler import AgentProfiler
 from agent_stress_test.reasoning.remediation import RemediationSuggester
 from agent_stress_test.reasoning.simulator import default_registry
 from agent_stress_test.report.dashboard.live_events import (
-    _live_trees,
-    _live_trees_lock,
-    _locked_cluster_ids,
-    _run_events,
+    live_trees,
+    live_trees_lock,
+    locked_cluster_ids,
+    stream_run_events,
 )
 from agent_stress_test.report.dashboard.prompt_diff import (
-    _diff_blocks,
-    _prompt_version_history,
-    _record_prompt_version,
+    diff_blocks,
+    prompt_version_history,
+    record_prompt_version,
 )
-from agent_stress_test.report.shared import _conversation_verdicts_by_leaf, _ranked_clusters
+from agent_stress_test.report.shared import conversation_verdicts_by_leaf, ranked_clusters
 from agent_stress_test.store.migrations import ensure_current_or_raise
 from agent_stress_test.store.sqlite_store import SqliteStore
 
@@ -87,7 +88,7 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
 def list_agent_specs() -> list[dict[str, str]]:
-    """The configured agent specs, as ``[{"id": <filename>, "name": <spec.name>}]``."""
+    """The configured agent specs, as ``[{"id": <filename>, "name": <agent_spec.name>}]``."""
     return [
         {"id": path.name, "name": load_agent_spec(path).name}
         for path in sorted(_CONFIG_AGENTS_DIR.glob("*.yaml"))
@@ -105,7 +106,7 @@ def list_tactics() -> list[dict[str, str]]:
     ]
 
 
-def _persona_options_for_spec(spec: AgentSpec, store: SqliteStore) -> list[dict[str, str]]:
+def _persona_options_for_spec(agent_spec: AgentSpec, store: SqliteStore) -> list[dict[str, str]]:
     """The run form's per-agent persona picker options: this agent's own
     stress profile personas if one has been generated, else the bundled
     tactic library.
@@ -113,10 +114,10 @@ def _persona_options_for_spec(spec: AgentSpec, store: SqliteStore) -> list[dict[
     Fully consumable by a real run: ``build_runner()`` (see
     ``orchestration/runner.py``'s ``_profile_extra_personas``) merges this
     same spec's approved profile personas in automatically, and
-    ``_resolve_tactics``'s ``extra_valid`` (see ``_execute_run`` below)
+    ``resolve_tactics``'s ``extra_valid`` (see ``_execute_run`` below)
     accepts a profile-sourced name explicitly selected here.
     """
-    profile = store.get_stress_profile(spec.name)
+    profile = store.get_stress_profile(agent_spec.name)
     if profile is not None and profile.personas:
         return [{"id": p.name, "description": p.scenario} for p in profile.personas]
     return list_tactics()
@@ -181,24 +182,24 @@ def _execute_run(
     daemon thread silently."""
     try:
         load_settings()
-        spec = load_agent_spec(agent_spec_path)
+        agent_spec = load_agent_spec(agent_spec_path)
         args = SimpleNamespace(
             provider=provider,
             sim_provider=sim_provider,
             target_url=target_url,
         )
-        llm = _build_provider(provider)
-        target = _build_target(args, spec, llm)
+        llm = build_provider(provider)
+        target = build_target(args, agent_spec, llm)
         with SqliteStore(db_path) as store:
-            profile = store.get_stress_profile(spec.name)
+            profile = store.get_stress_profile(agent_spec.name)
         extra_valid = [persona.name for persona in profile.personas] if profile else []
-        tactics = _resolve_tactics(tactics_arg, extra_valid=extra_valid)
-        sim_provider_name = _resolve_sim_provider_name(args)
-        sim_llm = llm if sim_provider_name == provider else _build_provider(sim_provider_name)
+        tactics = resolve_tactics(tactics_arg, extra_valid=extra_valid)
+        sim_provider_name = resolve_sim_provider_name(args)
+        sim_llm = llm if sim_provider_name == provider else build_provider(sim_provider_name)
 
         with SqliteStore(db_path) as store:
             runner = build_runner(
-                agent_spec=spec,
+                agent_spec=agent_spec,
                 target=target,
                 sim_provider=sim_llm,
                 llm=llm,
@@ -231,8 +232,8 @@ def _execute_run(
                 )
             )
     finally:
-        with _live_trees_lock:
-            _live_trees.pop(run_id, None)
+        with live_trees_lock:
+            live_trees.pop(run_id, None)
 
 
 def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
@@ -274,9 +275,9 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             path = _resolve_agent_spec_path(agent_spec_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        spec = load_agent_spec(path)
+        agent_spec = load_agent_spec(path)
         with SqliteStore(app.state.db_path) as store:
-            options = _persona_options_for_spec(spec, store)
+            options = _persona_options_for_spec(agent_spec, store)
         return templates.TemplateResponse(
             request, "fragments/personas_picker.html", {"tactics": options}
         )
@@ -293,7 +294,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     ) -> JSONResponse:
         try:
             agent_spec_path = _resolve_agent_spec_path(agent_spec_id)
-            spec = load_agent_spec(agent_spec_path)
+            agent_spec = load_agent_spec(agent_spec_path)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -302,7 +303,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             store.save_run(
                 Run(
                     id=run_id,
-                    agent_spec=spec,
+                    agent_spec=agent_spec,
                     provider=provider,
                     budget=budget,
                     status="running",
@@ -311,8 +312,8 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             )
 
         tree = ConversationTree(run_id)
-        with _live_trees_lock:
-            _live_trees[run_id] = tree
+        with live_trees_lock:
+            live_trees[run_id] = tree
 
         thread = threading.Thread(
             target=_execute_run,
@@ -345,7 +346,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             if run is None:
                 raise HTTPException(status_code=404, detail=f"No run found with id '{run_id}'.")
 
-            live_tree = _live_trees.get(run_id)
+            live_tree = live_trees.get(run_id)
             if run.status in ("pending", "running") and live_tree is not None:
                 tree = live_tree
                 verdicts = tree.all_verdicts()
@@ -354,10 +355,10 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                     score_run(tree.nodes(), verdicts) if tree.nodes() else None
                 )
             else:
-                run, tree, verdicts, clusters = _load_bundle(store, run_id)
+                run, tree, verdicts, clusters = load_bundle(store, run_id)
                 reliability = score_run(tree.nodes(), verdicts)
 
-            locked = _locked_cluster_ids(store, run.agent_spec.name)
+            locked = locked_cluster_ids(store, run.agent_spec.name)
 
         failures: list[Verdict] = [v for v in verdicts if not v.passed]
         return templates.TemplateResponse(
@@ -368,12 +369,12 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                 "run_id": run_id,
                 "run_provider": run.provider,
                 "reliability": reliability,
-                "ranked_clusters": _ranked_clusters(clusters, verdicts),
+                "ranked_clusters": ranked_clusters(clusters, verdicts),
                 "locked_cluster_ids": locked,
                 "failures": failures,
                 "tree": tree,
                 "near_misses": near_miss_ranking(tree.nodes(), verdicts),
-                "conversation_groups": _conversation_verdicts_by_leaf(verdicts),
+                "conversation_groups": conversation_verdicts_by_leaf(verdicts),
             },
         )
 
@@ -393,11 +394,11 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             if run is None:
                 raise HTTPException(status_code=404, detail=f"No run found with id '{run_id}'.")
 
-            live_tree = _live_trees.get(run_id)
+            live_tree = live_trees.get(run_id)
             if run.status in ("pending", "running") and live_tree is not None:
                 nodes, verdicts = live_tree.nodes(), live_tree.all_verdicts()
             else:
-                _run, tree, verdicts, _clusters = _load_bundle(store, run_id)
+                _run, tree, verdicts, _clusters = load_bundle(store, run_id)
                 nodes = tree.nodes()
 
         reliability = score_run(nodes, verdicts, model=model_cls())
@@ -413,22 +414,22 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             if store.get_run(run_id) is None:
                 raise HTTPException(status_code=404, detail=f"No run found with id '{run_id}'.")
         return StreamingResponse(
-            _run_events(run_id, app.state.db_path, templates), media_type="text/event-stream"
+            stream_run_events(run_id, app.state.db_path, templates), media_type="text/event-stream"
         )
 
     @app.post("/runs/{run_id}/clusters/{cluster_id}/lock", response_class=HTMLResponse)
     def post_lock_cluster(request: Request, run_id: str, cluster_id: str) -> HTMLResponse:
         with SqliteStore(app.state.db_path) as store:
-            run, tree, verdicts, clusters = _load_bundle(store, run_id)
+            run, tree, verdicts, clusters = load_bundle(store, run_id)
             for case in promote_clusters_to_cases(run, tree, clusters, cluster_ids={cluster_id}):
                 store.save_regression_case(case)
-            locked = _locked_cluster_ids(store, run.agent_spec.name)
+            locked = locked_cluster_ids(store, run.agent_spec.name)
 
         return templates.TemplateResponse(
             request,
             "fragments/cluster_table.html",
             {
-                "ranked_clusters": _ranked_clusters(clusters, verdicts),
+                "ranked_clusters": ranked_clusters(clusters, verdicts),
                 "run_id": run_id,
                 "run_provider": run.provider,
                 "locked_cluster_ids": locked,
@@ -441,7 +442,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     ) -> HTMLResponse:
         load_settings()
         with SqliteStore(app.state.db_path) as store:
-            run, tree, _verdicts, clusters = _load_bundle(store, run_id)
+            run, tree, _verdicts, clusters = load_bundle(store, run_id)
         cluster = next((c for c in clusters if c.id == cluster_id), None)
         if cluster is None or cluster.representative_node_id is None:
             raise HTTPException(
@@ -458,7 +459,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
         if rule is None:
             raise HTTPException(status_code=404, detail=f"Rule '{verdict.rule_id}' not found.")
 
-        suggestion = RemediationSuggester(_build_provider(provider)).suggest(
+        suggestion = RemediationSuggester(build_provider(provider)).suggest(
             run.agent_spec, rule, node.target_reply, verdict.reason
         )
         return templates.TemplateResponse(
@@ -469,7 +470,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                 "suggestion": suggestion,
                 "agent_spec_name": run.agent_spec.name,
                 "old_system_prompt": run.agent_spec.system_prompt,
-                "diff_blocks": _diff_blocks(run.agent_spec.system_prompt, suggestion.suggested_system_prompt),
+                "diff_blocks": diff_blocks(run.agent_spec.system_prompt, suggestion.suggested_system_prompt),
             },
         )
 
@@ -485,7 +486,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         # Record both ends of this write as distinct versions (content-
-        # addressed — see `_record_prompt_version`). The first-ever apply for
+        # addressed — see `record_prompt_version`). The first-ever apply for
         # an agent captures its original prompt as the baseline "Revision 1"
         # in the same stroke; every later apply is a no-op on whichever side
         # is already on file. A hosted deployment may give the person
@@ -494,8 +495,8 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
         # lets them restore any past version, regardless of how it's
         # deployed, including reapplying one they just undid.
         with SqliteStore(app.state.db_path) as store:
-            _record_prompt_version(store, agent_spec_name, previous_prompt)
-            _record_prompt_version(store, agent_spec_name, new_spec.system_prompt)
+            record_prompt_version(store, agent_spec_name, previous_prompt)
+            record_prompt_version(store, agent_spec_name, new_spec.system_prompt)
 
         if not request.headers.get("hx-request"):
             # A plain (non-htmx) form post — the "Revert to this version"
@@ -539,12 +540,12 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     ) -> HTMLResponse:
         load_settings()
         try:
-            spec = _find_agent_spec_by_name(agent_spec_name)
+            agent_spec = _find_agent_spec_by_name(agent_spec_name)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         try:
-            profile = AgentProfiler(_build_provider(provider)).profile(spec)
+            profile = AgentProfiler(build_provider(provider)).profile(agent_spec)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -599,22 +600,22 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     @app.get("/agent-specs/{agent_spec_name}/regression", response_class=HTMLResponse)
     def get_regression(request: Request, agent_spec_name: str) -> HTMLResponse:
         try:
-            spec = _find_agent_spec_by_name(agent_spec_name)
+            agent_spec = _find_agent_spec_by_name(agent_spec_name)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         with SqliteStore(app.state.db_path) as store:
-            cases = store.get_regression_cases(spec.name)
-            prompt_versions = store.get_system_prompt_versions(spec.name)
+            cases = store.get_regression_cases(agent_spec.name)
+            prompt_versions = store.get_system_prompt_versions(agent_spec.name)
         return templates.TemplateResponse(
             request,
             "regression.html",
             {
-                "agent_spec_name": spec.name,
+                "agent_spec_name": agent_spec.name,
                 "cases": cases,
                 "results": {},
                 "models": list_models(),
-                "prompt_history": _prompt_version_history(spec.system_prompt, prompt_versions),
+                "prompt_history": prompt_version_history(agent_spec.system_prompt, prompt_versions),
             },
         )
 
@@ -627,18 +628,20 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     ) -> HTMLResponse:
         load_settings()
         try:
-            spec = _find_agent_spec_by_name(agent_spec_name)
+            agent_spec = _find_agent_spec_by_name(agent_spec_name)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         with SqliteStore(app.state.db_path) as store:
-            cases = store.get_regression_cases(spec.name)
+            cases = store.get_regression_cases(agent_spec.name)
 
         results = {}
         if cases:
-            llm = _build_provider(provider)
-            target = _build_target(SimpleNamespace(target_url=target_url or None), spec, llm)
-            judge = build_two_tier_judge(spec, llm)
+            llm = build_provider(provider)
+            target = build_target(
+                SimpleNamespace(target_url=target_url or None), agent_spec, llm
+            )
+            judge = build_two_tier_judge(agent_spec, llm)
             results = {
                 result.case_id: result
                 for result in RegressionRunner(target, judge).replay_all(cases)

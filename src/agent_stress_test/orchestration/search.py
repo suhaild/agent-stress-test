@@ -37,7 +37,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from agent_stress_test.models import Message, Node, Severity, Verdict
+from agent_stress_test.models import AgentResponse, Message, Node, Severity, Verdict
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import TargetAgent
 from agent_stress_test.reasoning.consistency import ConsistencyScorer
@@ -94,6 +94,25 @@ def node_priority(node: Node, verdicts: list[Verdict]) -> float:
     if is_deflection(node.target_reply):
         proximity = max(proximity, DEFLECTION_WEIGHT)
     return (node.instability_score or 0.0) + proximity
+
+
+def score_and_judge(
+    node: Node,
+    response: AgentResponse,
+    *,
+    run_id: str,
+    judge: Judge,
+    scorer: ConsistencyScorer | None,
+    sample_n: int,
+) -> list[Verdict]:
+    """Instability-score and judge a node's reply — the shared step both
+    ``GreedyBestFirstSearch`` and ``DeepEvalConversationSearch`` run once a
+    node's target reply is known. Sets ``node.instability_score`` in place
+    (0.0 without a scorer, to skip its extra target calls) and returns the
+    judge's verdicts for the caller to commit onto the tree.
+    """
+    node.instability_score = scorer.score(node.messages, sample_n) if scorer is not None else 0.0
+    return judge.judge(response, run_id=run_id, node_id=node.id, conversation=node.messages)
 
 
 class Frontier:
@@ -303,13 +322,13 @@ class GreedyBestFirstSearch(SearchStrategy):
             tactic=tactic,
             tool_calls=response.tool_calls,
         )
-        if self._scorer is not None:
-            node.instability_score = self._scorer.score(messages, self._sample_n)
-        else:
-            node.instability_score = 0.0
-
-        verdicts = self._judge.judge(
-            response, run_id=run_id, node_id=node.id, conversation=messages
+        verdicts = score_and_judge(
+            node,
+            response,
+            run_id=run_id,
+            judge=self._judge,
+            scorer=self._scorer,
+            sample_n=self._sample_n,
         )
         return node, verdicts
 

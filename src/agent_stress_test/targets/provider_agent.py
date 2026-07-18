@@ -19,7 +19,7 @@ from agent_stress_test.models import (
 )
 from agent_stress_test.ports import TargetAgent
 from agent_stress_test.providers.litellm_provider import LiteLLMProvider
-from agent_stress_test.targets.sample_agent import _render_system_prompt
+from agent_stress_test.targets.prompt_rendering import _render_system_prompt
 
 # No tool declared on an AgentSpec has a real backend here (ToolSpec only
 # ever carries a name/description, never an implementation - see models.py),
@@ -28,7 +28,7 @@ from agent_stress_test.targets.sample_agent import _render_system_prompt
 _STUB_TOOL_RESULT = "[no execution backend configured for this tool in this stress test]"
 
 
-def _tool_schemas(spec: AgentSpec) -> list[dict]:
+def _tool_schemas(agent_spec: AgentSpec) -> list[dict]:
     """AgentSpec.tools translated to litellm/OpenAI's native tool-schema shape.
 
     Every tool is declared as accepting an open object, since ToolSpec never
@@ -44,7 +44,7 @@ def _tool_schemas(spec: AgentSpec) -> list[dict]:
                 "parameters": {"type": "object", "properties": {}, "additionalProperties": True},
             },
         }
-        for tool in spec.tools
+        for tool in agent_spec.tools
     ]
 
 

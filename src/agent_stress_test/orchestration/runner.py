@@ -255,7 +255,7 @@ def build_runner(
         sim_provider,
         resolved_judge,
         scorer,
-        tactics=tactics,
+        personas=tactics,
         sample_n=sample_n,
         extra_personas=extra_personas,
         conversation_judge=conversation_judge,

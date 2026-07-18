@@ -22,7 +22,7 @@ def _worst_severity(cluster: Cluster, verdicts: list[Verdict]) -> str:
     return next(sev for sev, weight in SEVERITY_WEIGHT.items() if weight == best)
 
 
-def _ranked_clusters(clusters: list[Cluster], verdicts: list[Verdict]) -> list[dict]:
+def ranked_clusters(clusters: list[Cluster], verdicts: list[Verdict]) -> list[dict]:
     """Clusters worst-severity-first then largest-first, each paired with its
     severity — pre-computed so a renderer just iterates, no ranking logic of
     its own."""
@@ -34,7 +34,7 @@ def _ranked_clusters(clusters: list[Cluster], verdicts: list[Verdict]) -> list[d
     return [{"cluster": c, "severity": _worst_severity(c, verdicts)} for c in ranked]
 
 
-def _conversation_verdicts_by_leaf(verdicts: list[Verdict]) -> dict[str, list[Verdict]]:
+def conversation_verdicts_by_leaf(verdicts: list[Verdict]) -> dict[str, list[Verdict]]:
     """Group ``scope="conversation"`` verdicts by their leaf node id — see
     ``Verdict.scope``'s docstring: that id is the persona chain's LEAF node,
     since ``tree.path_to_root()`` of it reconstructs exactly the conversation

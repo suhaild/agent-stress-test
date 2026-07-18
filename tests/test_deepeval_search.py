@@ -59,9 +59,9 @@ def test_search_ingests_a_linear_chain_per_persona(sample_agent_spec_path):
         assert len(chain[-1].messages) > len(chain[0].messages)
 
 
-def test_search_respects_a_persona_subset_via_tactics_param(sample_agent_spec_path):
+def test_search_respects_a_persona_subset_via_personas_param(sample_agent_spec_path):
     target = PythonFunctionAgent(lambda conversation: "Happy to help.")
-    search = _make_search(sample_agent_spec_path, target, tactics=["hostile", "stale-recall"])
+    search = _make_search(sample_agent_spec_path, target, personas=["hostile", "stale-recall"])
     tree = ConversationTree("run-1")
 
     result = search.search(tree, [], budget=1)
@@ -72,7 +72,7 @@ def test_search_respects_a_persona_subset_via_tactics_param(sample_agent_spec_pa
 
 def test_search_judges_every_ingested_node_and_reports_failures(sample_agent_spec_path):
     target = PythonFunctionAgent(lambda conversation: "Sure — I've already refunded your card.")
-    search = _make_search(sample_agent_spec_path, target, tactics=["hostile"])
+    search = _make_search(sample_agent_spec_path, target, personas=["hostile"])
     tree = ConversationTree("run-1")
 
     result = search.search(tree, [], budget=1)
@@ -86,7 +86,7 @@ def test_search_persists_structured_tool_calls_onto_ingested_nodes(sample_agent_
     search = _make_search(
         sample_agent_spec_path,
         PythonFunctionAgent(tool_calling_verification_agent),
-        tactics=["hostile"],
+        personas=["hostile"],
     )
     tree = ConversationTree("run-1")
 
@@ -100,7 +100,7 @@ def test_search_persists_structured_tool_calls_onto_ingested_nodes(sample_agent_
 
 def test_search_without_a_scorer_defaults_instability_to_zero(sample_agent_spec_path):
     target = PythonFunctionAgent(lambda conversation: "Happy to help.")
-    search = _make_search(sample_agent_spec_path, target, tactics=["hostile"])
+    search = _make_search(sample_agent_spec_path, target, personas=["hostile"])
     tree = ConversationTree("run-1")
 
     search.search(tree, [], budget=1)
@@ -120,7 +120,7 @@ def test_search_with_a_scorer_resamples_the_target_and_scores_instability(sample
 
     target = PythonFunctionAgent(flaky_target)
     scorer = ConsistencyScorer(target)
-    search = _make_search(sample_agent_spec_path, target, scorer, tactics=["hostile"])
+    search = _make_search(sample_agent_spec_path, target, scorer, personas=["hostile"])
     tree = ConversationTree("run-1")
 
     search.search(tree, [], budget=1)
@@ -138,7 +138,7 @@ def test_search_raises_a_clean_value_error_on_zero_budget(sample_agent_spec_path
     # still turns this into a clean one-line message, never a raw traceback,
     # so this is documented, not silently crash-prone.
     target = PythonFunctionAgent(lambda conversation: "Happy to help.")
-    search = _make_search(sample_agent_spec_path, target, tactics=["hostile"])
+    search = _make_search(sample_agent_spec_path, target, personas=["hostile"])
     tree = ConversationTree("run-1")
 
     with pytest.raises(ValueError, match="max_user_simulations"):
@@ -157,7 +157,7 @@ def test_search_runs_an_extra_persona_not_in_the_bundled_registry(sample_agent_s
     search = _make_search(
         sample_agent_spec_path,
         target,
-        tactics=["symptom-minimizer"],
+        personas=["symptom-minimizer"],
         extra_personas={"symptom-minimizer": custom_golden},
     )
     tree = ConversationTree("run-1")
@@ -169,7 +169,7 @@ def test_search_runs_an_extra_persona_not_in_the_bundled_registry(sample_agent_s
     assert node.tactic == "symptom-minimizer"
 
 
-def test_search_with_no_explicit_tactics_defaults_to_bundled_plus_extra_personas(
+def test_search_with_no_explicit_personas_defaults_to_bundled_plus_extra_personas(
     sample_agent_spec_path,
 ):
     target = PythonFunctionAgent(lambda conversation: "Happy to help.")
@@ -198,7 +198,7 @@ def test_search_attaches_conversation_verdicts_to_the_chains_leaf_node_only(
     search = _make_search(
         sample_agent_spec_path,
         target,
-        tactics=["hostile"],
+        personas=["hostile"],
         conversation_judge=build_conversation_judge(ShapedFakeLLM(), spec),
     )
     tree = ConversationTree("run-1")
@@ -228,7 +228,7 @@ def test_search_without_a_conversation_judge_attaches_no_conversation_verdicts(
     sample_agent_spec_path,
 ):
     target = PythonFunctionAgent(lambda conversation: "Happy to help.")
-    search = _make_search(sample_agent_spec_path, target, tactics=["hostile"])
+    search = _make_search(sample_agent_spec_path, target, personas=["hostile"])
     tree = ConversationTree("run-1")
 
     search.search(tree, [], budget=2)
@@ -246,7 +246,7 @@ def test_search_extra_personas_do_not_shadow_the_bundled_registry(sample_agent_s
     search = _make_search(
         sample_agent_spec_path,
         target,
-        tactics=["hostile"],
+        personas=["hostile"],
         extra_personas={"custom-persona": custom_golden},
     )
     tree = ConversationTree("run-1")

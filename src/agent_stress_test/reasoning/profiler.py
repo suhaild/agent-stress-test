@@ -17,7 +17,6 @@ gaps."
 """
 
 import json
-import re
 
 from deepeval.dataset import ConversationalGolden
 from pydantic import BaseModel, ValidationError
@@ -31,16 +30,7 @@ from agent_stress_test.models import (
     StressProfile,
 )
 from agent_stress_test.ports import LLMProvider
-
-# Mirrors judge.py's/remediation.py's identical helper: real models routinely
-# wrap their JSON output in a markdown code fence even when told to respond
-# with ONLY the JSON object (confirmed against a live model).
-_JSON_FENCE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
-
-
-def _strip_json_fence(raw: str) -> str:
-    match = _JSON_FENCE.match(raw.strip())
-    return match.group(1).strip() if match else raw
+from agent_stress_test.reasoning.json_utils import _strip_json_fence
 
 
 _PROFILER_SYSTEM = (
@@ -94,11 +84,11 @@ class AgentProfiler:
     def __init__(self, llm: LLMProvider) -> None:
         self._llm = llm
 
-    def profile(self, spec: AgentSpec) -> StressProfile:
-        raw = self._llm.complete(self._prompt(spec))
+    def profile(self, agent_spec: AgentSpec) -> StressProfile:
+        raw = self._llm.complete(self._prompt(agent_spec))
         output = self._parse(raw)
         return StressProfile(
-            agent_spec_name=spec.name,
+            agent_spec_name=agent_spec.name,
             personas=[
                 ProfilePersona(
                     name=p.name, scenario=p.scenario, user_description=p.user_description
@@ -106,19 +96,19 @@ class AgentProfiler:
                 for p in output.personas
             ],
             candidate_rules=[
-                Rule(id=_rule_id(spec.name, i), text=r.text, severity=r.severity)
+                Rule(id=_rule_id(agent_spec.name, i), text=r.text, severity=r.severity)
                 for i, r in enumerate(output.candidate_rules)
             ],
         )
 
     @staticmethod
-    def _prompt(spec: AgentSpec) -> list[Message]:
-        tools_block = ", ".join(tool.name for tool in spec.tools) or "(none declared)"
+    def _prompt(agent_spec: AgentSpec) -> list[Message]:
+        tools_block = ", ".join(tool.name for tool in agent_spec.tools) or "(none declared)"
         user = (
-            f"Agent name: {spec.name}\n"
-            f"Purpose: {spec.purpose or '(not specified)'}\n"
-            f"Domain: {spec.domain or '(not specified)'}\n"
-            f"System prompt:\n{spec.system_prompt}\n\n"
+            f"Agent name: {agent_spec.name}\n"
+            f"Purpose: {agent_spec.purpose or '(not specified)'}\n"
+            f"Domain: {agent_spec.domain or '(not specified)'}\n"
+            f"System prompt:\n{agent_spec.system_prompt}\n\n"
             f"Available tools: {tools_block}\n\n"
             "Generate the stress-test profile now."
         )

@@ -23,12 +23,12 @@ from pathlib import Path
 from rich.console import Console
 
 from agent_stress_test.composition import (
-    _DEFAULT_SIM_MODEL,  # noqa: F401 (re-exported: tests import this from cli)
-    _build_provider,
-    _build_target,
-    _resolve_sim_provider_name,
-    _resolve_tactics,
+    DEFAULT_SIM_MODEL,  # noqa: F401 (re-exported: tests import this from cli)
+    build_provider,
+    build_target,
     cluster_and_persist,
+    resolve_sim_provider_name,
+    resolve_tactics,
 )
 from agent_stress_test.config import load_agent_spec, load_settings
 from agent_stress_test.orchestration.runner import build_runner
@@ -45,8 +45,8 @@ _DEFAULT_DB = "runs.sqlite"
 def _cmd_run(args: argparse.Namespace, console: Console) -> int:
     load_settings()  # side effect: load .env so litellm sees the API key
     spec = load_agent_spec(args.agent_spec)
-    llm = _build_provider(args.provider)
-    target = _build_target(args, spec, llm)
+    llm = build_provider(args.provider)
+    target = build_target(args, spec, llm)
     budget = args.budget
     sample_n = args.sample_n
 
@@ -57,12 +57,12 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
     with SqliteStore(args.db) as store:
         profile = store.get_stress_profile(spec.name)
     extra_valid = [persona.name for persona in profile.personas] if profile else []
-    tactics = _resolve_tactics(args.tactics, extra_valid=extra_valid)
+    tactics = resolve_tactics(args.tactics, extra_valid=extra_valid)
 
     # The simulator's job (write one adversarial customer line) doesn't need
     # the target-tier model, so it defaults to a cheaper one.
-    sim_provider_name = _resolve_sim_provider_name(args)
-    sim_llm = llm if sim_provider_name == args.provider else _build_provider(sim_provider_name)
+    sim_provider_name = resolve_sim_provider_name(args)
+    sim_llm = llm if sim_provider_name == args.provider else build_provider(sim_provider_name)
 
     # Self-consistency needs >= 2 samples to detect any disagreement; a single
     # sample can only ever score 0.0, so skip the scorer (and every one of its
@@ -70,14 +70,19 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
     # resamples the target itself, so this applies to any target, not just
     # the bundled SampleAgent.
     use_scorer = sample_n >= 2
-    n_tactics = len(tactics)
-    nodes = 1 + budget * n_tactics
-    est_calls = nodes + (nodes * sample_n if use_scorer else 0) + budget * n_tactics
+    n_personas = len(tactics)
+    # build_runner() wires DeepEvalConversationSearch by default: one
+    # independent conversation per persona, up to `budget` turns each (see
+    # its own docstring) — not GreedyBestFirstSearch's expansion-tree shape,
+    # so this is a rough per-turn estimate, not an exact call count.
+    nodes = n_personas * budget
+    est_calls = nodes + (nodes * sample_n if use_scorer else 0)
     consistency = f"sample-n={sample_n}" if use_scorer else "off"
     sim_note = f", simulator={sim_provider_name}" if sim_provider_name != args.provider else ""
     console.print(
         f"[dim]Running against [bold]{args.provider}[/bold] "
-        f"(budget={budget}, {n_tactics} tactics, consistency={consistency}{sim_note}) - "
+        f"(budget={budget} turns/persona, {n_personas} personas, "
+        f"consistency={consistency}{sim_note}) - "
         f"up to ~{est_calls} model calls. This can take a while.[/dim]"
     )
 
@@ -141,7 +146,10 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--target-url", default=None)
     run_parser.add_argument("--db", default=_DEFAULT_DB)
     run_parser.add_argument(
-        "--budget", type=int, default=6, help="Search expansions (default: 6)."
+        "--budget",
+        type=int,
+        default=6,
+        help="Turns per persona conversation (default: 6).",
     )
     run_parser.add_argument(
         "--sample-n",

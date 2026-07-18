@@ -2,6 +2,8 @@
 {{ indent }}  {{ severity }}
 {{ indent }}</span>{% endmacro %}
 
+{% macro severity_color(severity, dim=False) %}{% if severity == 'critical' %}var(--fail{{ '-dim' if dim }}){% elif severity == 'major' %}var(--warn{{ '-dim' if dim }}){% else %}var(--pass{{ '-dim' if dim }}){% endif %}{% endmacro %}
+
 {% macro role_label(role) %}<span class="font-mono text-xs font-semibold uppercase tracking-wide {% if role == 'user' %}text-[var(--accent)]{% elif role == 'assistant' %}text-[var(--ink)]{% elif role == 'tool' %}text-[var(--ink-faint)]{% else %}text-[var(--ink-faint)] italic{% endif %}">{% if role == 'tool' %}🔧 {% endif %}{{ role }}</span>{% endmacro %}
 
 {% macro render_content(content) %}{% if content is string %}<span class="text-[var(--ink)]">{{ content }}</span>{% else %}<div class="space-y-1.5">
@@ -45,8 +47,8 @@
 {% macro verdict_block(failing) %}{% if failing %}
     {% set verdict = failing[0] %}
     <div class="mt-3 rounded-sm p-3" style="
-        border: 1px solid {% if verdict.severity == 'critical' %}var(--fail){% elif verdict.severity == 'major' %}var(--warn){% else %}var(--pass){% endif %};
-        background: {% if verdict.severity == 'critical' %}var(--fail-dim){% elif verdict.severity == 'major' %}var(--warn-dim){% else %}var(--pass-dim){% endif %};">
+        border: 1px solid {{ severity_color(verdict.severity) }};
+        background: {{ severity_color(verdict.severity, dim=True) }};">
       <p class="font-mono text-[.68rem] font-semibold uppercase tracking-wide mb-1">Verdict — {{ verdict.severity }}</p>
       <p class="font-mono text-[.68rem] text-[var(--ink-dim)]">
         rule: {{ verdict.rule_id or "—" }} · tier: {{ verdict.tier }}

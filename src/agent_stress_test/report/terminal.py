@@ -27,7 +27,7 @@ from agent_stress_test.orchestration.reliability import (
     near_miss_ranking,
 )
 from agent_stress_test.orchestration.tree import ConversationTree
-from agent_stress_test.report.shared import _conversation_verdicts_by_leaf, _ranked_clusters
+from agent_stress_test.report.shared import conversation_verdicts_by_leaf, ranked_clusters
 
 _SEVERITY_STYLE = {"critical": "bold red", "major": "yellow", "minor": "cyan"}
 _ROLE_STYLE = {"system": "dim italic", "user": "bold magenta", "assistant": "bold white"}
@@ -122,7 +122,7 @@ def render_clusters(console: Console, clusters: list[Cluster], verdicts: list[Ve
     table.add_column("Members", justify="right")
     table.add_column("Representative node", overflow="fold")
 
-    for entry in _ranked_clusters(clusters, verdicts):
+    for entry in ranked_clusters(clusters, verdicts):
         cluster, severity = entry["cluster"], entry["severity"]
         table.add_row(
             cluster.label,
@@ -227,7 +227,7 @@ def render_conversation_verdicts(
     """Phase C2/C6: whole-conversation metric verdicts (role adherence,
     knowledge retention, ...), one table per persona chain — path-keyed by
     its leaf node, distinct from any single turn's per-node rule verdict."""
-    grouped = _conversation_verdicts_by_leaf(verdicts)
+    grouped = conversation_verdicts_by_leaf(verdicts)
     if not grouped:
         return
     for leaf_id, leaf_verdicts in grouped.items():

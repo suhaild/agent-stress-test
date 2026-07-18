@@ -17,11 +17,11 @@ from typing import Any, Iterator
 
 from fastapi.templating import Jinja2Templates
 
-from agent_stress_test.composition import _load_bundle
+from agent_stress_test.composition import load_bundle
 from agent_stress_test.models import Run, Verdict
 from agent_stress_test.orchestration.reliability import near_miss_ranking, score_run
 from agent_stress_test.orchestration.tree import ConversationTree
-from agent_stress_test.report.shared import _conversation_verdicts_by_leaf, _ranked_clusters
+from agent_stress_test.report.shared import conversation_verdicts_by_leaf, ranked_clusters
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 # Registered by the request thread the instant a run starts, before the
@@ -30,11 +30,11 @@ from agent_stress_test.store.sqlite_store import SqliteStore
 # each tree in place from the run's own thread while this module reads it
 # from the request-serving threadpool; ``ConversationTree`` guards every
 # access with its own lock (see tree.py) so that read/write race is safe.
-_live_trees: dict[str, ConversationTree] = {}
-_live_trees_lock = threading.Lock()
+live_trees: dict[str, ConversationTree] = {}
+live_trees_lock = threading.Lock()
 
 
-def _locked_cluster_ids(store: SqliteStore, agent_spec_name: str) -> set[str]:
+def locked_cluster_ids(store: SqliteStore, agent_spec_name: str) -> set[str]:
     """Cluster ids already promoted into the regression corpus — so the Lock
     button can show "locked" instead of silently minting duplicate cases."""
     return {case.source_cluster_id for case in store.get_regression_cases(agent_spec_name)}
@@ -86,7 +86,7 @@ class _LivePanel:
 
 
 def _build_event_tick(run_id: str, db_path: str) -> _EventTick:
-    tree = _live_trees.get(run_id)
+    tree = live_trees.get(run_id)
     node_count = len(tree.nodes()) if tree is not None else 0
     with SqliteStore(db_path) as store:
         run = store.get_run(run_id)
@@ -100,11 +100,11 @@ def _build_event_tick(run_id: str, db_path: str) -> _EventTick:
     )
     if tick.is_terminal:
         with SqliteStore(db_path) as store:
-            final_run, final_tree, final_verdicts, final_clusters = _load_bundle(store, run_id)
-            locked = _locked_cluster_ids(store, final_run.agent_spec.name)
+            final_run, final_tree, final_verdicts, final_clusters = load_bundle(store, run_id)
+            locked = locked_cluster_ids(store, final_run.agent_spec.name)
         tick.final_tree = final_tree
         tick.final_verdicts = final_verdicts
-        tick.ranked_clusters = _ranked_clusters(final_clusters, final_verdicts)
+        tick.ranked_clusters = ranked_clusters(final_clusters, final_verdicts)
         tick.run_provider = final_run.provider
         tick.locked_cluster_ids = locked
     return tick
@@ -189,7 +189,7 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
     def conversation_verdicts_context(tick: _EventTick) -> dict[str, Any]:
         return {
             "tree": tick.final_tree,
-            "conversation_groups": _conversation_verdicts_by_leaf(tick.final_verdicts),
+            "conversation_groups": conversation_verdicts_by_leaf(tick.final_verdicts),
         }
 
     return [
@@ -234,7 +234,7 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
     ]
 
 
-def _run_events(run_id: str, db_path: str, templates: Jinja2Templates) -> Iterator[str]:
+def stream_run_events(run_id: str, db_path: str, templates: Jinja2Templates) -> Iterator[str]:
     panels = _make_live_panels(run_id)
     while True:
         tick = _build_event_tick(run_id, db_path)

@@ -3,8 +3,9 @@
 import json
 import subprocess
 
-from agent_stress_test.models import AgentResponse, Message, Step
+from agent_stress_test.models import AgentResponse, Message
 from agent_stress_test.ports import TargetAgent
+from agent_stress_test.targets.wire_protocol import _build_wire_payload, _parse_wire_response
 
 
 class SubprocessAgent(TargetAgent):
@@ -30,10 +31,9 @@ class SubprocessAgent(TargetAgent):
         self._cwd = cwd
 
     def respond(self, conversation: list[Message]) -> AgentResponse:
-        payload = {"messages": [m.model_dump(exclude={"cache"}) for m in conversation]}
         result = subprocess.run(
             self._command,
-            input=json.dumps(payload),
+            input=json.dumps(_build_wire_payload(conversation)),
             capture_output=True,
             text=True,
             timeout=self._timeout,
@@ -44,7 +44,4 @@ class SubprocessAgent(TargetAgent):
                 f"Subprocess target {self._command!r} exited {result.returncode}: "
                 f"{result.stderr.strip()}"
             )
-        body = json.loads(result.stdout.strip())
-        trace_data = body.get("trace")
-        trace = [Step(**step) for step in trace_data] if trace_data else None
-        return AgentResponse(final_reply=body["reply"], trace=trace)
+        return _parse_wire_response(json.loads(result.stdout.strip()))

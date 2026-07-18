@@ -19,7 +19,7 @@ node (see ``_ingest``).
 """
 
 from agent_stress_test.models import AgentResponse, Message, Node, Verdict
-from agent_stress_test.orchestration.search import SearchResult, SearchStrategy
+from agent_stress_test.orchestration.search import SearchResult, SearchStrategy, score_and_judge
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import LLMProvider, TargetAgent
 from agent_stress_test.reasoning.consistency import ConsistencyScorer
@@ -42,6 +42,15 @@ class DeepEvalConversationSearch(SearchStrategy):
     ``seed_messages`` is accepted (required by that shared interface) but
     unused: each persona supplies its own opening line via its own scenario,
     there's no fixed seed turn to start from.
+
+    Every node this strategy creates carries its persona name in
+    ``Node.tactic`` (the field predates this engine, back when a node's
+    branch was always a bundled tactic — see ``search.py``'s
+    ``GreedyBestFirstSearch``). The bundled personas happen to reuse the same
+    5 names as the tactic registry, but a profile-sourced persona (see
+    ``extra_personas`` below) is a genuinely distinct name with no
+    corresponding tactic — either way, ``Node.tactic`` here always holds
+    whichever persona produced that node.
     """
 
     def __init__(
@@ -51,7 +60,7 @@ class DeepEvalConversationSearch(SearchStrategy):
         judge: Judge,
         scorer: ConsistencyScorer | None = None,
         *,
-        tactics: list[str] | None = None,
+        personas: list[str] | None = None,
         sample_n: int = 3,
         extra_personas: dict[str, object] | None = None,
         conversation_judge: ConversationJudge | None = None,
@@ -77,7 +86,7 @@ class DeepEvalConversationSearch(SearchStrategy):
         self._judge = judge
         self._scorer = scorer
         self._extra_personas = dict(extra_personas) if extra_personas else {}
-        self._personas = tactics if tactics is not None else [*PERSONAS, *self._extra_personas]
+        self._personas = personas if personas is not None else [*PERSONAS, *self._extra_personas]
         self._sample_n = sample_n
         self._conversation_judge = conversation_judge
 
@@ -106,7 +115,7 @@ class DeepEvalConversationSearch(SearchStrategy):
     def _ingest(
         self,
         tree: ConversationTree,
-        tactic: str,
+        persona: str,
         turns,
         failures: list[Verdict],
         golden: object | None = None,
@@ -131,17 +140,17 @@ class DeepEvalConversationSearch(SearchStrategy):
                 parent_id=parent_id,
                 messages=list(conversation[:-1]),
                 target_reply=turn.content,
-                tactic=tactic,
+                tactic=persona,
                 tool_calls=tool_calls,
             )
-            if self._scorer is not None:
-                node.instability_score = self._scorer.score(node.messages, self._sample_n)
-            else:
-                node.instability_score = 0.0
-
             response = AgentResponse(final_reply=turn.content, tool_calls=tool_calls)
-            verdicts = self._judge.judge(
-                response, run_id=tree.run_id, node_id=node.id, conversation=node.messages
+            verdicts = score_and_judge(
+                node,
+                response,
+                run_id=tree.run_id,
+                judge=self._judge,
+                scorer=self._scorer,
+                sample_n=self._sample_n,
             )
 
             tree.add(node)

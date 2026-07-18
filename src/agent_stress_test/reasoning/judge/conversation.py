@@ -195,10 +195,12 @@ class ConversationRuleJudge(ConversationMetricJudge):
     ``Rule`` and so correctly uses ``rule.severity`` (config, set by a
     human), exactly like tier 2's ``LLMJudge``."""
 
-    def __init__(self, llm: LLMProvider, spec: AgentSpec) -> None:
+    def __init__(self, llm: LLMProvider, agent_spec: AgentSpec) -> None:
         model = LLMProviderAsDeepEvalLLM(llm)
-        self._rules_by_id = {rule.id: rule for rule in spec.rules}
-        self._metrics = {rule.id: _conversation_rule_metric(rule, model) for rule in spec.rules}
+        self._rules_by_id = {rule.id: rule for rule in agent_spec.rules}
+        self._metrics = {
+            rule.id: _conversation_rule_metric(rule, model) for rule in agent_spec.rules
+        }
 
     def judge_conversation(
         self, test_case: ConversationalTestCase, *, run_id: str, node_id: str
@@ -262,11 +264,11 @@ class ConversationJudge:
         return verdicts
 
 
-def build_conversation_judge(llm: LLMProvider, spec: AgentSpec) -> ConversationJudge:
+def build_conversation_judge(llm: LLMProvider, agent_spec: AgentSpec) -> ConversationJudge:
     """Compose the bundled whole-conversation metrics with a per-rule
-    conversational GEval for ``spec`` (the composition-root-style factory,
-    same shape as ``build_two_tier_judge``)."""
-    chatbot_role = spec.purpose or spec.system_prompt
+    conversational GEval for ``agent_spec`` (the composition-root-style
+    factory, same shape as ``build_two_tier_judge``)."""
+    chatbot_role = agent_spec.purpose or agent_spec.system_prompt
     return ConversationJudge(
         chatbot_role,
         [
@@ -274,6 +276,6 @@ def build_conversation_judge(llm: LLMProvider, spec: AgentSpec) -> ConversationJ
             KnowledgeRetentionJudge(llm),
             ConversationCompletenessJudge(llm),
             TurnRelevancyJudge(llm),
-            ConversationRuleJudge(llm, spec),
+            ConversationRuleJudge(llm, agent_spec),
         ],
     )

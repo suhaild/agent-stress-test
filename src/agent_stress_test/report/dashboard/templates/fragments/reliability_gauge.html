@@ -1,4 +1,4 @@
-{% from "macros.html" import severity_tag %}
+{% from "macros.html" import severity_tag, severity_color %}
 {% macro model_select() %}
 {% if run_id %}
 <select name="model" class="field-input font-mono text-[.68rem]" style="width: auto; padding: .3rem .5rem;"
@@ -50,7 +50,7 @@
       {% for severity, count in reliability.severity_breakdown.items() %}
       {% if count %}
       {% set w = count / total * 100 %}
-      <rect x="{{ ns.x }}" y="0" width="{{ w }}" height="8" style="fill: {% if severity == 'critical' %}var(--fail){% elif severity == 'major' %}var(--warn){% else %}var(--pass){% endif %};"></rect>
+      <rect x="{{ ns.x }}" y="0" width="{{ w }}" height="8" style="fill: {{ severity_color(severity) }};"></rect>
       {% set ns.x = ns.x + w %}
       {% endif %}
       {% endfor %}

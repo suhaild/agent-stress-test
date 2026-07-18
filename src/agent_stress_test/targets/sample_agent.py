@@ -4,6 +4,7 @@ import re
 
 from agent_stress_test.models import AgentResponse, AgentSpec, Message, Step
 from agent_stress_test.ports import LLMProvider, TargetAgent
+from agent_stress_test.targets.prompt_rendering import _render_system_prompt
 
 _STEP_FIELD_BY_LABEL = {
     "Thought": "thought",
@@ -19,26 +20,6 @@ _LABELS = ("Thought", "Action Input", "Action", "Observation", _FINAL_ANSWER_LAB
 # these and silently falls back to treating the whole completion, reasoning
 # included, as the reply (see `_parse_react_completion`'s docstring).
 _LABEL_PATTERN = re.compile(r"^[*_]{0,2}(" + "|".join(_LABELS) + r"):\s*[*_]{0,2}\s*")
-
-
-def _render_system_prompt(spec: AgentSpec) -> str:
-    sections = [spec.system_prompt]
-
-    if spec.tools:
-        tool_lines = "\n".join(f"- {tool.name}: {tool.description}" for tool in spec.tools)
-        sections.append(f"Available tools:\n{tool_lines}")
-
-    rule_lines = "\n".join(f"- {rule.text}" for rule in spec.rules)
-    sections.append(f"Rules:\n{rule_lines}")
-
-    sections.append(
-        "Think step by step. For each step, write a line starting with "
-        "'Thought:', optionally followed by 'Action:', 'Action Input:', and "
-        "'Observation:' lines. When ready to reply to the user, write a line "
-        "starting with 'Final Answer:' followed by your reply."
-    )
-
-    return "\n\n".join(sections)
 
 
 def _parse_react_completion(text: str) -> AgentResponse:

@@ -35,6 +35,7 @@ from agent_stress_test.targets.sample_agent import SampleAgent
 from agent_stress_test.targets.tool_calling_verification_agent import (
     tool_calling_verification_agent,
 )
+from tests.conftest import build_and_run
 
 TACTIC_COUNT = len(default_registry().names())
 
@@ -385,14 +386,7 @@ def _always_self_refunds(conversation: list[Message]) -> str:
 
 
 def run_once(spec_path: Path):
-    spec = load_agent_spec(spec_path)
-    runner = build_runner(
-        agent_spec=spec,
-        target=PythonFunctionAgent(_always_self_refunds),
-        sim_provider=ShapedFakeLLM(),
-        sample_n=1,  # no consistency scorer needed to exercise this wiring
-    )
-    return runner.run(provider_name="fake", budget=_END_TO_END_BUDGET)
+    return build_and_run(spec_path, _always_self_refunds, budget=_END_TO_END_BUDGET)
 
 
 def test_end_to_end_run_completes_and_populates_the_tree(sample_agent_spec_path):

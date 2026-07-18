@@ -1,13 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from agent_stress_test.config import (
-    Settings,
-    _replace_system_prompt_block,
-    apply_system_prompt,
-    load_agent_spec,
-    load_settings,
-)
+from agent_stress_test.config import Settings, load_agent_spec, load_settings
+from agent_stress_test.config_writer import _replace_system_prompt_block, apply_system_prompt
 
 
 def test_load_agent_spec_from_sample_yaml(sample_agent_spec_path):

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_stress_test.composition import _load_bundle
+from agent_stress_test.composition import load_bundle
 from agent_stress_test.config import load_agent_spec
 from agent_stress_test.models import (
     Message,
@@ -24,6 +24,7 @@ from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.tool_calling_verification_agent import (
     tool_calling_verification_agent,
 )
+from tests.conftest import build_and_run
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "agent_stress_test"
 
@@ -44,17 +45,7 @@ def planted_fn(conversation: list[Message]) -> str:
 
 
 def run_with_store(spec_path: Path, store: SqliteStore):
-    spec = load_agent_spec(spec_path)
-    # sample_n defaults to 3 (>= 2), so build_runner() builds a self-consistency
-    # scorer automatically, resampling this same target.
-    runner = build_runner(
-        agent_spec=spec,
-        target=PythonFunctionAgent(planted_fn),
-        sim_provider=ShapedFakeLLM(),
-        store=store,
-        sample_n=1,
-    )
-    return runner.run(provider_name="fake", budget=2)
+    return build_and_run(spec_path, planted_fn, store=store)
 
 
 # --- Round-trip: a run reloads with identical structure ------------------
@@ -265,7 +256,7 @@ def test_tool_calls_with_wrong_arguments_persist_structured_and_reload_via_load_
         run_id = result.run.id
 
     with SqliteStore(db) as reloaded:
-        _run, tree, _verdicts, _clusters = _load_bundle(reloaded, run_id)
+        _run, tree, _verdicts, _clusters = load_bundle(reloaded, run_id)
 
     nodes_with_calls = [node for node in tree.nodes() if node.tool_calls]
     assert nodes_with_calls, "expected at least one node with a persisted ToolCall"

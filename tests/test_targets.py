@@ -9,41 +9,23 @@ from pydantic import ValidationError
 from agent_stress_test.composition import _build_target_from_spec, _load_python_target
 from agent_stress_test.models import (
     AgentResponse,
-    AgentSpec,
     Capabilities,
     Message,
-    Rule,
     Step,
     ToolCall,
-    ToolSpec,
 )
 from agent_stress_test.ports import TargetAgent
 from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.targets.http_agent import HttpAgent
 from agent_stress_test.targets.provider_agent import _STUB_TOOL_RESULT, ProviderAgent, _tool_schemas
+from agent_stress_test.targets.prompt_rendering import _render_system_prompt
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
-from agent_stress_test.targets.sample_agent import SampleAgent, _render_system_prompt
+from agent_stress_test.targets.sample_agent import SampleAgent
 from agent_stress_test.targets.subprocess_agent import SubprocessAgent
 from agent_stress_test.targets.tool_calling_verification_agent import (
     tool_calling_verification_agent,
 )
-
-
-def make_agent_spec(**overrides) -> AgentSpec:
-    defaults = dict(
-        name="test_agent",
-        system_prompt="You are a helpful assistant.",
-        tools=[
-            ToolSpec(name="lookup_order", description="Look up an order by ID."),
-            ToolSpec(name="initiate_return", description="Start a return."),
-        ],
-        rules=[
-            Rule(id="no-invent", text="Never invent data.", severity="major"),
-            Rule(id="be-polite", text="Always be polite.", severity="minor"),
-        ],
-    )
-    defaults.update(overrides)
-    return AgentSpec(**defaults)
+from tests.conftest import make_agent_spec
 
 
 # --- SampleAgent -------------------------------------------------------
@@ -582,27 +564,23 @@ def test_subprocess_agent_raises_on_non_zero_exit(monkeypatch):
 # --- Capabilities (A4) ------------------------------------------------------
 
 
-def test_sample_agent_capabilities_default_to_all_false():
-    agent = SampleAgent(make_agent_spec(), FakeLLMProvider())
-    assert agent.capabilities() == Capabilities()
-
-
-def test_http_agent_capabilities_default_to_all_false():
-    assert HttpAgent(url="http://example.test/respond").capabilities() == Capabilities()
-
-
-def test_python_function_agent_capabilities_default_to_all_false():
-    agent = PythonFunctionAgent(lambda conversation: "reply")
-    assert agent.capabilities() == Capabilities()
+@pytest.mark.parametrize(
+    "build_agent",
+    [
+        lambda: SampleAgent(make_agent_spec(), FakeLLMProvider()),
+        lambda: HttpAgent(url="http://example.test/respond"),
+        lambda: PythonFunctionAgent(lambda conversation: "reply"),
+        lambda: SubprocessAgent(command=["true"]),
+    ],
+    ids=["sample_agent", "http_agent", "python_function_agent", "subprocess_agent"],
+)
+def test_agent_capabilities_default_to_all_false(build_agent):
+    assert build_agent().capabilities() == Capabilities()
 
 
 def test_python_function_agent_capabilities_can_be_declared_explicitly():
     agent = PythonFunctionAgent(lambda conversation: "reply", capabilities=Capabilities(tools=True))
     assert agent.capabilities() == Capabilities(tools=True)
-
-
-def test_subprocess_agent_capabilities_default_to_all_false():
-    assert SubprocessAgent(command=["true"]).capabilities() == Capabilities()
 
 
 def test_provider_agent_reports_real_tool_calling_capability():

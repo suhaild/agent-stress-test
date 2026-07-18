@@ -34,10 +34,10 @@ from agent_stress_test.targets.subprocess_agent import SubprocessAgent
 # solve the task under test — a cheap, fast model does that job as well as the
 # target-tier one, at a fraction of the cost. Used only when the run's main
 # provider is a real (non-fake) model and no explicit override was given.
-_DEFAULT_SIM_MODEL = "anthropic/claude-haiku-4-5-20251001"
+DEFAULT_SIM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
 
-def _build_provider(name: str) -> LLMProvider:
+def build_provider(name: str) -> LLMProvider:
     if name == "fake":
         # ShapedFakeLLM is a strict superset of the plain FakeLLMProvider
         # (identical "fake-reply: ..." behavior whenever no DeepEval schema
@@ -49,7 +49,7 @@ def _build_provider(name: str) -> LLMProvider:
     return LiteLLMProvider(model=name)
 
 
-def _resolve_sim_provider_name(args: argparse.Namespace) -> str:
+def resolve_sim_provider_name(args: argparse.Namespace) -> str:
     """The model name to drive the simulator: explicit override, else a cheap
     default — unless the main provider is "fake", which stays fake so offline
     runs never silently reach out to a real API."""
@@ -57,16 +57,16 @@ def _resolve_sim_provider_name(args: argparse.Namespace) -> str:
         return args.sim_provider
     if args.provider == "fake":
         return "fake"
-    return _DEFAULT_SIM_MODEL
+    return DEFAULT_SIM_MODEL
 
 
-def _build_target(args: argparse.Namespace, spec: AgentSpec, llm: LLMProvider) -> TargetAgent:
+def build_target(args: argparse.Namespace, agent_spec: AgentSpec, llm: LLMProvider) -> TargetAgent:
     if args.target_url:
         return HttpAgent(args.target_url)
-    return _build_target_from_spec(spec, llm)
+    return _build_target_from_spec(agent_spec, llm)
 
 
-def _build_target_from_spec(spec: AgentSpec, llm: LLMProvider) -> TargetAgent:
+def _build_target_from_spec(agent_spec: AgentSpec, llm: LLMProvider) -> TargetAgent:
     """Build whatever ``TargetAgent`` a spec's ``target:`` block declares —
     the one place that reads it generically, so a new kind is a new branch
     here, not a new special-case threaded through cli.py/server.py. No
@@ -74,9 +74,9 @@ def _build_target_from_spec(spec: AgentSpec, llm: LLMProvider) -> TargetAgent:
     SampleAgent, driven by the run's own provider, exactly as before this
     field existed.
     """
-    target = spec.target
+    target = agent_spec.target
     if target is None:
-        return SampleAgent(spec, llm)
+        return SampleAgent(agent_spec, llm)
     if target.kind == "http":
         return HttpAgent(target.url, timeout=target.timeout, headers=target.headers)
     if target.kind == "python":
@@ -84,7 +84,7 @@ def _build_target_from_spec(spec: AgentSpec, llm: LLMProvider) -> TargetAgent:
     if target.kind == "subprocess":
         return SubprocessAgent(target.command, timeout=target.timeout, cwd=target.cwd)
     if target.kind == "provider":
-        return ProviderAgent(LiteLLMProvider(model=target.model), spec)
+        return ProviderAgent(LiteLLMProvider(model=target.model), agent_spec)
     raise ValueError(f"Unknown target kind: {target.kind!r}")  # pragma: no cover - exhaustive union
 
 
@@ -132,7 +132,7 @@ def _rebuild_tree(run_id: str, nodes: list[Node], verdicts: list[Verdict]) -> Co
     return tree
 
 
-def _load_bundle(
+def load_bundle(
     store: Store, run_id: str
 ) -> tuple[Run, ConversationTree, list[Verdict], list[Cluster]]:
     run = store.get_run(run_id)
@@ -145,7 +145,7 @@ def _load_bundle(
     return run, tree, verdicts, clusters
 
 
-def _resolve_tactics(spec_arg: str | None, *, extra_valid: Iterable[str] = ()) -> list[str]:
+def resolve_tactics(tactics_arg: str | None, *, extra_valid: Iterable[str] = ()) -> list[str]:
     """A validated tactic subset from a comma-separated arg (default: all).
 
     ``extra_valid`` widens what counts as a valid name beyond the bundled
@@ -158,9 +158,9 @@ def _resolve_tactics(spec_arg: str | None, *, extra_valid: Iterable[str] = ()) -
     bundled = default_registry().names()
     extra = [name for name in extra_valid if name not in bundled]
     available = [*bundled, *extra]
-    if not spec_arg:
+    if not tactics_arg:
         return available
-    chosen = [name.strip() for name in spec_arg.split(",") if name.strip()]
+    chosen = [name.strip() for name in tactics_arg.split(",") if name.strip()]
     unknown = [name for name in chosen if name not in available]
     if unknown:
         raise ValueError(
