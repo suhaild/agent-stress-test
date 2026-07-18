@@ -16,7 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from agent_stress_test.models import Cluster, RegressionCase, Rule, Run, Verdict
+from agent_stress_test.models import Cluster, RegressionCase, Rule, Run, StressProfile, Verdict
 from agent_stress_test.orchestration.reliability import ReliabilityReport
 from agent_stress_test.orchestration.regression import RegressionResult
 from agent_stress_test.orchestration.search import SEVERITY_WEIGHT
@@ -267,6 +267,37 @@ def render_remediation_suggestion(
     _render_diff(console, old_system_prompt, suggestion.suggested_system_prompt)
 
 
+def render_profile(console: Console, profile: StressProfile) -> None:
+    """A generated StressProfile: its personas and candidate rules, both
+    PROPOSED — presentation only. Nothing here applies a candidate rule to
+    the AgentSpec; a human reviews (and, in the dashboard, edits) this
+    before anything from it is used.
+    """
+    console.print(
+        Panel(
+            f"agent: {profile.agent_spec_name}\nprofile id: {profile.id}",
+            title="Stress Profile (proposed — not applied)",
+            border_style="cyan",
+        )
+    )
+
+    persona_table = Table(title="Personas", expand=True)
+    persona_table.add_column("name", style="bold")
+    persona_table.add_column("scenario")
+    persona_table.add_column("user description")
+    for persona in profile.personas:
+        persona_table.add_row(persona.name, persona.scenario, persona.user_description)
+    console.print(persona_table)
+
+    rule_table = Table(title="Candidate Rules", expand=True)
+    rule_table.add_column("id", style="bold")
+    rule_table.add_column("severity")
+    rule_table.add_column("text")
+    for rule in profile.candidate_rules:
+        rule_table.add_row(rule.id, Text(rule.severity, style=_SEVERITY_STYLE[rule.severity]), rule.text)
+    console.print(rule_table)
+
+
 __all__ = [
     "render_reliability",
     "render_clusters",
@@ -275,4 +306,5 @@ __all__ = [
     "render_replay",
     "render_regression_report",
     "render_remediation_suggestion",
+    "render_profile",
 ]

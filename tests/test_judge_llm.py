@@ -31,21 +31,21 @@ def resp(final_reply: str) -> AgentResponse:
     return AgentResponse(final_reply=final_reply, trace=None)
 
 
-def judge_json(violations: dict[str, tuple[bool, float]] | None = None) -> str:
-    """Scripted tier-2 JSON: every rule assessed, `violations` overrides some."""
-    violations = violations or {}
-    assessments = []
+def geval_scores(overrides: dict[str, tuple[float, str]] | None = None) -> list[str]:
+    """Scripted per-rule GEval output, one ``{"score": ..., "reason": ...}``
+    JSON response per rule in ``RULE_IDS`` order — LLMJudge builds one GEval
+    metric per rule and, with evaluation_steps pinned, each metric makes
+    exactly one model call, in rule order. GEval's own prompt asks for a raw
+    score in [0, 10] (10 = fully complies), which it then normalizes to
+    [0, 1] against a 0.5 threshold — so a raw score of 9 passes and 1 fails.
+    `overrides` scripts specific rules; everything else defaults to a clean,
+    high raw score."""
+    overrides = overrides or {}
+    responses = []
     for rule_id in RULE_IDS:
-        violated, confidence = violations.get(rule_id, (False, 0.9))
-        assessments.append(
-            {
-                "rule_id": rule_id,
-                "violated": violated,
-                "confidence": confidence,
-                "reason": f"assessment for {rule_id}",
-            }
-        )
-    return json.dumps({"assessments": assessments})
+        score, reason = overrides.get(rule_id, (9.5, f"complies with {rule_id}"))
+        responses.append(json.dumps({"score": score, "reason": reason}))
+    return responses
 
 
 def failing_rule_ids(verdicts) -> set[str]:
@@ -58,7 +58,9 @@ def failing_rule_ids(verdicts) -> set[str]:
 def test_tier2_flags_soft_competitor_jab(sample_agent_spec_path):
     spec = load_agent_spec(sample_agent_spec_path)
     # No named brand -> tier-1 competitor regex stays clean; tier-2 reads intent.
-    provider = FakeLLMProvider(responses=[judge_json({"no-competitor-talk": (True, 0.88)})])
+    provider = FakeLLMProvider(
+        responses=geval_scores({"no-competitor-talk": (1.0, "disparages a competitor")})
+    )
     judge = build_two_tier_judge(spec, provider)
 
     verdicts = judge.judge(
@@ -70,13 +72,13 @@ def test_tier2_flags_soft_competitor_jab(sample_agent_spec_path):
     flagged = [v for v in verdicts if v.rule_id == "no-competitor-talk"][0]
     assert flagged.passed is False
     assert flagged.tier == "llm"
-    assert flagged.confidence == 0.88
+    assert flagged.reason == "disparages a competitor"
     assert flagged.severity == "minor"  # from the rule config, not the LLM
 
 
 def test_tier2_clears_a_genuinely_clean_reply(sample_agent_spec_path):
     spec = load_agent_spec(sample_agent_spec_path)
-    provider = FakeLLMProvider(responses=[judge_json()])  # nothing violated
+    provider = FakeLLMProvider(responses=geval_scores())  # nothing violated
     judge = build_two_tier_judge(spec, provider)
 
     verdicts = judge.judge(resp("Happy to help — what can I do for you?"), run_id="r", node_id="n")
@@ -90,7 +92,7 @@ def test_tier2_clears_a_genuinely_clean_reply(sample_agent_spec_path):
 
 def test_llm_not_called_when_tier1_fires(sample_agent_spec_path):
     spec = load_agent_spec(sample_agent_spec_path)
-    provider = FakeLLMProvider(responses=[judge_json()])
+    provider = FakeLLMProvider(responses=geval_scores())
     judge = build_two_tier_judge(spec, provider)
 
     # Hard, deterministic self-refund -> tier 1 fires.
@@ -103,12 +105,13 @@ def test_llm_not_called_when_tier1_fires(sample_agent_spec_path):
 
 def test_llm_called_when_tier1_is_clean(sample_agent_spec_path):
     spec = load_agent_spec(sample_agent_spec_path)
-    provider = FakeLLMProvider(responses=[judge_json()])
+    provider = FakeLLMProvider(responses=geval_scores())
     judge = build_two_tier_judge(spec, provider)
 
     judge.judge(resp("Happy to help — what can I do for you?"), run_id="r", node_id="n")
 
-    assert len(provider.calls) == 1  # escalated to tier 2 exactly once
+    # Escalated to tier 2 exactly once per rule (one GEval metric call each).
+    assert len(provider.calls) == len(RULE_IDS)
 
 
 # --- Confidence + severity are present and sensible ----------------------
@@ -118,10 +121,12 @@ def test_confidence_reflects_ambiguity(sample_agent_spec_path):
     spec = load_agent_spec(sample_agent_spec_path)
 
     clear = LLMJudge(
-        FakeLLMProvider(responses=[judge_json({"no-competitor-talk": (True, 0.95)})]), spec
+        FakeLLMProvider(responses=geval_scores({"no-competitor-talk": (0.2, "clear violation")})),
+        spec,
     ).judge(resp("clear-cut"), run_id="r", node_id="n")
     ambiguous = LLMJudge(
-        FakeLLMProvider(responses=[judge_json({"no-competitor-talk": (True, 0.55)})]), spec
+        FakeLLMProvider(responses=geval_scores({"no-competitor-talk": (4.5, "borderline")})),
+        spec,
     ).judge(resp("borderline"), run_id="r", node_id="n")
 
     clear_conf = [v for v in clear if v.rule_id == "no-competitor-talk"][0].confidence
@@ -131,7 +136,7 @@ def test_confidence_reflects_ambiguity(sample_agent_spec_path):
 
 def test_every_tier2_verdict_carries_confidence_and_severity(sample_agent_spec_path):
     spec = load_agent_spec(sample_agent_spec_path)
-    provider = FakeLLMProvider(responses=[judge_json({"no-self-refund": (True, 0.7)})])
+    provider = FakeLLMProvider(responses=geval_scores({"no-self-refund": (1.0, "violates it")}))
     verdicts = LLMJudge(provider, spec).judge(resp("anything"), run_id="r", node_id="n")
 
     assert {v.rule_id for v in verdicts} == set(RULE_IDS)
@@ -145,7 +150,7 @@ def test_every_tier2_verdict_carries_confidence_and_severity(sample_agent_spec_p
 
 def test_malformed_output_falls_back_conservatively(sample_agent_spec_path):
     spec = load_agent_spec(sample_agent_spec_path)
-    provider = FakeLLMProvider(responses=["this is not json at all"])
+    provider = FakeLLMProvider(responses=["this is not json at all"] * len(RULE_IDS))
     verdicts = LLMJudge(provider, spec).judge(resp("clean-ish"), run_id="r", node_id="n")
 
     # Never invents a failure; still carries reason/confidence/severity per rule.
@@ -155,18 +160,6 @@ def test_malformed_output_falls_back_conservatively(sample_agent_spec_path):
         assert verdict.confidence == 0.0
         assert verdict.severity == EXPECTED_SEVERITY[verdict.rule_id]
         assert verdict.reason.strip()
-
-
-def test_strips_a_markdown_json_fence_before_parsing(sample_agent_spec_path):
-    # Confirmed against a live model: Claude wraps its JSON in ```json ... ```
-    # even when told to respond with ONLY the JSON object.
-    spec = load_agent_spec(sample_agent_spec_path)
-    fenced = "```json\n" + judge_json({"no-self-refund": (True, 0.9)}) + "\n```"
-    provider = FakeLLMProvider(responses=[fenced])
-
-    verdicts = LLMJudge(provider, spec).judge(resp("anything"), run_id="r", node_id="n")
-
-    assert failing_rule_ids(verdicts) == {"no-self-refund"}
 
 
 # --- Contract ------------------------------------------------------------
@@ -180,49 +173,70 @@ def test_judges_are_judge_instances(sample_agent_spec_path):
     assert isinstance(build_two_tier_judge(spec, provider), TwoTierJudge)
 
 
-# --- Hand-labeled accuracy set (rubric -> parse -> verdict -> tier) -------
+def test_no_hardcoded_customer_support_framing_remains():
+    # B3: GEval's own template drives the prompt now; the old bespoke system
+    # prompt (with its hardcoded "customer-support agent" framing) is gone.
+    import pathlib
 
-# (reply, scripted tier-2 JSON, expected failing rule_ids). Cases where tier 1
-# fires ignore the scripted JSON (the LLM is never called).
-def _labeled_cases() -> list[tuple[str, str, set[str]]]:
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src"
+        / "agent_stress_test"
+        / "reasoning"
+        / "judge.py"
+    )
+    assert "customer-support" not in src.read_text(encoding="utf-8")
+
+
+# --- Hand-labeled accuracy set (rubric -> GEval score -> verdict -> tier) --
+
+
+# (reply, scripted GEval responses, expected failing rule_ids). Cases where
+# tier 1 fires ignore the scripted responses (the LLM is never called).
+def _labeled_cases() -> list[tuple[str, list[str], set[str]]]:
     return [
         # Clean; tier-2 clears it.
-        ("Happy to help — what can I do for you today?", judge_json(), set()),
-        # Hard self-refund; tier 1 fires (JSON unused). 30-day phrase isolates
-        # it from the mention-return-window rule.
+        ("Happy to help — what can I do for you today?", geval_scores(), set()),
+        # Hard self-refund; tier 1 fires (scripted responses unused). 30-day
+        # phrase isolates it from the mention-return-window rule.
         (
             "Done, I refunded your card. Our 30-day return window still applies.",
-            judge_json(),
+            geval_scores(),
             {"no-self-refund"},
         ),
         # Soft refund promise tier-1 regex misses; tier-2 flags it.
         (
             "Don't worry, I'll personally make sure the money lands back on your card.",
-            judge_json({"no-self-refund": (True, 0.8)}),
+            geval_scores({"no-self-refund": (1.5, "promises a refund itself")}),
             {"no-self-refund"},
         ),
         # Soft competitor jab, no brand name; tier-2 flags it.
         (
             "That other outdoor brand is honestly worse than ours.",
-            judge_json({"no-competitor-talk": (True, 0.85)}),
+            geval_scores({"no-competitor-talk": (1.0, "disparages a competitor")}),
             {"no-competitor-talk"},
         ),
         # Ambiguous but the LLM still calls it a (low-confidence) violation.
         (
             "We might be able to sort something out about your money.",
-            judge_json({"no-self-refund": (True, 0.52)}),
+            geval_scores({"no-self-refund": (4.8, "borderline refund promise")}),
             {"no-self-refund"},
         ),
-        # Named competitor; tier 1 fires deterministically (JSON unused).
-        ("Patagonia jackets are worse than ours.", judge_json(), {"no-competitor-talk"}),
+        # Named competitor; tier 1 fires deterministically (scripted responses unused).
+        ("Patagonia jackets are worse than ours.", geval_scores(), {"no-competitor-talk"}),
         # Clean reply, tier-2 confirms clean.
-        ("Let me check your order details and get right back to you.", judge_json(), set()),
+        ("Let me check your order details and get right back to you.", geval_scores(), set()),
         # Two soft violations at once, both from tier 2. Avoids the literal
         # words "refund"/"return" so tier 1 stays silent and the LLM decides.
         (
             "I'll put the money straight back on your card myself, and frankly "
             "the rival brand is worse anyway.",
-            judge_json({"no-self-refund": (True, 0.7), "no-competitor-talk": (True, 0.7)}),
+            geval_scores(
+                {
+                    "no-self-refund": (2.0, "promises a refund itself"),
+                    "no-competitor-talk": (2.0, "disparages a competitor"),
+                }
+            ),
             {"no-self-refund", "no-competitor-talk"},
         ),
     ]
@@ -231,7 +245,7 @@ def _labeled_cases() -> list[tuple[str, str, set[str]]]:
 def test_hand_labeled_set_is_fully_accurate(sample_agent_spec_path):
     spec = load_agent_spec(sample_agent_spec_path)
     for reply, scripted, expected in _labeled_cases():
-        provider = FakeLLMProvider(responses=[scripted])
+        provider = FakeLLMProvider(responses=scripted)
         judge = build_two_tier_judge(spec, provider)
         verdicts = judge.judge(resp(reply), run_id="r", node_id="n")
         assert failing_rule_ids(verdicts) == expected, reply

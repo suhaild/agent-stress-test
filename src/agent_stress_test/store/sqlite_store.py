@@ -17,6 +17,7 @@ from agent_stress_test.models import (
     Node,
     RegressionCase,
     Run,
+    StressProfile,
     SystemPromptVersion,
     Verdict,
 )
@@ -39,12 +40,16 @@ CREATE TABLE IF NOT EXISTS regression_cases (
 CREATE TABLE IF NOT EXISTS system_prompt_versions (
     id TEXT PRIMARY KEY, agent_spec_name TEXT NOT NULL, data TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS stress_profiles (
+    id TEXT PRIMARY KEY, agent_spec_name TEXT NOT NULL, data TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_nodes_run ON nodes(run_id);
 CREATE INDEX IF NOT EXISTS idx_verdicts_run ON verdicts(run_id);
 CREATE INDEX IF NOT EXISTS idx_clusters_run ON clusters(run_id);
 CREATE INDEX IF NOT EXISTS idx_regression_cases_agent ON regression_cases(agent_spec_name);
 CREATE INDEX IF NOT EXISTS idx_system_prompt_versions_agent
     ON system_prompt_versions(agent_spec_name);
+CREATE INDEX IF NOT EXISTS idx_stress_profiles_agent ON stress_profiles(agent_spec_name);
 """
 
 
@@ -180,3 +185,22 @@ class SqliteStore(Store):
             (agent_spec_name,),
         ).fetchall()
         return [SystemPromptVersion.model_validate_json(row[0]) for row in rows]
+
+    # --- stress profiles -----------------------------------------------------
+
+    def save_stress_profile(self, profile: StressProfile) -> None:
+        self._upsert(
+            "stress_profiles",
+            ("id", "agent_spec_name", "data"),
+            (profile.id, profile.agent_spec_name, profile.model_dump_json()),
+        )
+
+    def get_stress_profile(self, agent_spec_name: str) -> StressProfile | None:
+        # One live profile per agent: the most recently saved row. Editing
+        # saves back to the same id (in place); regenerating mints a new one
+        # and this always surfaces whichever is newest.
+        row = self._conn.execute(
+            "SELECT data FROM stress_profiles WHERE agent_spec_name = ? ORDER BY rowid DESC LIMIT 1",
+            (agent_spec_name,),
+        ).fetchone()
+        return StressProfile.model_validate_json(row[0]) if row is not None else None

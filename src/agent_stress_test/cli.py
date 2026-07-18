@@ -29,9 +29,11 @@ from agent_stress_test.orchestration.regression import (
 from agent_stress_test.orchestration.reliability import score_run
 from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.reasoning.judge import build_two_tier_judge
+from agent_stress_test.reasoning.profiler import AgentProfiler
 from agent_stress_test.reasoning.remediation import RemediationSuggester
 from agent_stress_test.report.terminal import (
     render_full_report,
+    render_profile,
     render_regression_report,
     render_remediation_suggestion,
     render_replay,
@@ -52,7 +54,15 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
     target = _build_target(args, spec, llm)
     budget = args.budget
     sample_n = args.sample_n
-    tactics = _resolve_tactics(args.tactics)
+
+    # A short-lived peek at this agent's own approved StressProfile (if any),
+    # so an explicit --tactics naming one of its personas validates here
+    # instead of being rejected before build_runner() (which merges profile
+    # personas in automatically) ever sees it.
+    with SqliteStore(args.db) as store:
+        profile = store.get_stress_profile(spec.name)
+    extra_valid = [persona.name for persona in profile.personas] if profile else []
+    tactics = _resolve_tactics(args.tactics, extra_valid=extra_valid)
 
     # The simulator's job (write one adversarial customer line) doesn't need
     # the target-tier model, so it defaults to a cheaper one.
@@ -201,6 +211,23 @@ def _cmd_regress(args: argparse.Namespace, console: Console) -> int:
     return 1 if regressed else 0
 
 
+def _cmd_profile(args: argparse.Namespace, console: Console) -> int:
+    load_settings()
+    spec = load_agent_spec(args.agent_spec)
+    llm = _build_provider(args.provider)
+    profile = AgentProfiler(llm).profile(spec)
+
+    with SqliteStore(args.db) as store:
+        store.save_stress_profile(profile)
+
+    render_profile(console, profile)
+    console.print(
+        "[dim]Proposed only — review/edit in the dashboard's profile screen "
+        "before anything from it is used.[/dim]"
+    )
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace, console: Console) -> int:
     # Imported lazily so `run`/`report`/`replay` never pay for importing
     # FastAPI/uvicorn or building the Jinja2 environment.
@@ -291,6 +318,14 @@ def _build_parser() -> argparse.ArgumentParser:
     regress_parser.add_argument("--target-url", default=None)
     regress_parser.add_argument("--db", default=_DEFAULT_DB)
     regress_parser.set_defaults(func=_cmd_regress)
+
+    profile_parser = subparsers.add_parser(
+        "profile", help="Generate a stress-test profile (personas + candidate rules) for an agent."
+    )
+    profile_parser.add_argument("--agent-spec", type=Path, default=_DEFAULT_AGENT_SPEC)
+    profile_parser.add_argument("--provider", default="fake")
+    profile_parser.add_argument("--db", default=_DEFAULT_DB)
+    profile_parser.set_defaults(func=_cmd_profile)
 
     serve_parser = subparsers.add_parser("serve", help="Serve the web dashboard.")
     serve_parser.add_argument("--db", default=_DEFAULT_DB)

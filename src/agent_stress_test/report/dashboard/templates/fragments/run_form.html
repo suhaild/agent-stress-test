@@ -29,7 +29,9 @@
   <div>
     <label class="field-label block mb-1">Target Agent</label>
     <p class="field-help mb-1.5">Which agent's rules and persona the judge checks replies against.</p>
-    <select name="agent_spec_id" class="field-input">
+    <select name="agent_spec_id" class="field-input"
+            hx-get="/agent-specs/personas" hx-trigger="change"
+            hx-target="#tactics-picker" hx-swap="outerHTML">
       {% for spec in agent_specs %}
       <option value="{{ spec.id }}">{{ spec.name }}</option>
       {% endfor %}

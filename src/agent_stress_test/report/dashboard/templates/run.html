@@ -11,6 +11,10 @@
          class="font-mono text-xs text-[var(--accent)] hover:underline mt-1 inline-block">
         View regression corpus →
       </a>
+      <a href="/agent-specs/{{ run.agent_spec.name | urlencode }}/profile"
+         class="font-mono text-xs text-[var(--accent)] hover:underline mt-1 ml-3 inline-block">
+        View stress profile →
+      </a>
     </div>
     <div id="status-badge" sse-swap="status" hx-swap="innerHTML">
       {% include "fragments/status_badge.html" %}

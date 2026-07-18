@@ -13,14 +13,15 @@ from __future__ import annotations
 
 import argparse
 import importlib
+from collections.abc import Iterable
 
 from agent_stress_test.models import AgentSpec, Cluster, Node, Run, Verdict
 from agent_stress_test.orchestration.runner import RunResult
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import LLMProvider, Store, TargetAgent
 from agent_stress_test.providers.embedder import HashingEmbedder
-from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.providers.litellm_provider import LiteLLMProvider
+from agent_stress_test.providers.shaped_fake import ShapedFakeLLM
 from agent_stress_test.reasoning.clusterer import FailureClusterer
 from agent_stress_test.reasoning.simulator import default_registry
 from agent_stress_test.targets.http_agent import HttpAgent
@@ -38,7 +39,13 @@ _DEFAULT_SIM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
 def _build_provider(name: str) -> LLMProvider:
     if name == "fake":
-        return FakeLLMProvider()
+        # ShapedFakeLLM is a strict superset of the plain FakeLLMProvider
+        # (identical "fake-reply: ..." behavior whenever no DeepEval schema
+        # was requested) — "fake" means the fully-capable offline stand-in
+        # everywhere, since the adversarial simulator now always drives
+        # sim_provider through DeepEval's schema-validated turn generation
+        # (see orchestration/deepeval_search.py), even offline.
+        return ShapedFakeLLM()
     return LiteLLMProvider(model=name)
 
 
@@ -138,9 +145,19 @@ def _load_bundle(
     return run, tree, verdicts, clusters
 
 
-def _resolve_tactics(spec_arg: str | None) -> list[str]:
-    """A validated tactic subset from a comma-separated arg (default: all)."""
-    available = default_registry().names()
+def _resolve_tactics(spec_arg: str | None, *, extra_valid: Iterable[str] = ()) -> list[str]:
+    """A validated tactic subset from a comma-separated arg (default: all).
+
+    ``extra_valid`` widens what counts as a valid name beyond the bundled
+    tactic registry — the caller passes in an agent's own approved
+    ``StressProfile`` persona names (if any) here, so ``build_runner()``
+    (which merges those personas in automatically — see ``runner.py``'s
+    ``_profile_extra_personas``) never rejects a name it would actually be
+    able to run.
+    """
+    bundled = default_registry().names()
+    extra = [name for name in extra_valid if name not in bundled]
+    available = [*bundled, *extra]
     if not spec_arg:
         return available
     chosen = [name.strip() for name in spec_arg.split(",") if name.strip()]

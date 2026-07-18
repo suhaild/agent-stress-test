@@ -1,0 +1,44 @@
+<div x-data>
+  {% if profile is none %}
+  <div class="panel p-6 text-sm text-[var(--ink-dim)]">
+    No stress profile generated yet for this agent — use "Generate Profile" above.
+  </div>
+  {% else %}
+  <form hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/profile/save"
+        hx-target="#profile-editor" hx-swap="innerHTML" class="space-y-6">
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="tag-label">Personas <span class="text-[var(--ink-faint)] normal-case">(proposed — usable by a run as soon as generated)</span></h3>
+        <button type="button" class="btn-ghost text-xs"
+                @click="$refs.personaList.appendChild($refs.personaTemplate.content.cloneNode(true))">
+          + Add Persona
+        </button>
+      </div>
+      <template x-ref="personaTemplate">{% include "fragments/persona_row.html" %}</template>
+      <div x-ref="personaList" class="space-y-3">
+        {% for persona in profile.personas %}
+        {% include "fragments/persona_row.html" %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="tag-label">Candidate Rules <span class="text-[var(--ink-faint)] normal-case">(proposed — never auto-applied)</span></h3>
+        <button type="button" class="btn-ghost text-xs"
+                @click="$refs.ruleList.appendChild($refs.ruleTemplate.content.cloneNode(true))">
+          + Add Rule
+        </button>
+      </div>
+      <template x-ref="ruleTemplate">{% include "fragments/rule_row.html" %}</template>
+      <div x-ref="ruleList" class="space-y-3">
+        {% for rule in profile.candidate_rules %}
+        {% include "fragments/rule_row.html" %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <button type="submit" class="btn-stamp">Save Profile Edits</button>
+  </form>
+  {% endif %}
+</div>

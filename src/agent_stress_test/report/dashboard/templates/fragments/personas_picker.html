@@ -1,0 +1,21 @@
+<div id="tactics-picker" x-data="multiSelect()" @click.outside="open = false" class="relative">
+  <label class="field-label block mb-1">Attack Tactics</label>
+  <p class="field-help mb-1.5">Choose which tactics to run — none selected tries them all.</p>
+  <button type="button" @click="open = !open" class="field-input flex items-center justify-between text-left w-full">
+    <span x-text="selected.length ? selected.length + ' selected' : 'All tactics'" class="truncate"></span>
+    <span class="text-[var(--ink-faint)] ml-2 transition-transform duration-150" :class="{ 'rotate-180': open }">▾</span>
+  </button>
+  <input type="hidden" name="tactics" :value="selected.join(',')">
+  <div x-show="open" x-collapse x-cloak class="tactic-panel">
+    {% for tactic in tactics %}
+    <label class="tactic-row">
+      <input type="checkbox" value="{{ tactic.id }}" class="mt-0.5 accent-[var(--accent)]"
+             @change="$event.target.checked ? selected.push('{{ tactic.id }}') : selected = selected.filter(t => t !== '{{ tactic.id }}')">
+      <span class="min-w-0">
+        <span class="field-label block">{{ tactic.id.replace('-', ' ') | title }}</span>
+        <span class="field-help block mt-0.5">{{ tactic.description }}</span>
+      </span>
+    </label>
+    {% endfor %}
+  </div>
+</div>

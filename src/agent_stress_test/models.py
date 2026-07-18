@@ -312,11 +312,19 @@ class AgentSpec(BaseModel):
     against (see ``composition.py``'s ``_build_target_from_spec``) — left
     unset (the common case), the run falls back to the bundled, LLM-driven
     ``SampleAgent`` instead.
+
+    ``purpose``/``domain`` are optional free text (blank by default, so every
+    pre-existing spec still loads unchanged) describing what this agent is
+    for and what field it operates in — read by ``reasoning/profiler.py``'s
+    ``AgentProfiler`` so the personas/rules it proposes are grounded in this
+    specific agent, not the bundled customer-support tactic library.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    purpose: str = ""
+    domain: str = ""
     system_prompt: str = Field(min_length=1)
     tools: list[ToolSpec] = Field(default_factory=list)
     rules: list[Rule] = Field(min_length=1)
@@ -426,4 +434,44 @@ class SystemPromptVersion(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     agent_spec_name: str
     system_prompt: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ProfilePersona(BaseModel):
+    """One profiler-generated adversarial persona for a specific AgentSpec.
+
+    The same ``scenario``/``user_description`` shape DeepEval's own
+    ``ConversationalGolden`` needs (see ``reasoning/profiler.py``'s
+    ``to_conversational_golden``), kept as our own plain model here so
+    ``deepeval`` stays confined to the reasoning layer (CLAUDE.md Golden
+    Rule #1) — ``models.py`` is core and must never import it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    scenario: str = Field(min_length=1)
+    user_description: str = Field(min_length=1)
+
+
+class StressProfile(BaseModel):
+    """A profiler-generated bundle of candidate personas and rules for one
+    AgentSpec — the hybrid gate's artifact (see ``reasoning/profiler.py``).
+
+    ``personas`` are usable as soon as they're generated: picking one to run
+    a simulated conversation against has no lasting effect on the spec.
+    ``candidate_rules`` are different — silently merging a bad rule into
+    ``AgentSpec.rules`` would misjudge every future run of this agent, so
+    they stay PROPOSED here, separate from the spec's own ``rules``, until a
+    human reviews (and edits, via the dashboard's profile screen) them.
+    Nothing in this codebase copies ``candidate_rules`` into an AgentSpec
+    automatically.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    agent_spec_name: str
+    personas: list[ProfilePersona] = Field(default_factory=list)
+    candidate_rules: list[Rule] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

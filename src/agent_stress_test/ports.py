@@ -11,6 +11,7 @@ from agent_stress_test.models import (
     Node,
     RegressionCase,
     Run,
+    StressProfile,
     SystemPromptVersion,
     TokenUsage,
     Verdict,
@@ -149,3 +150,9 @@ class Store(ABC):
 
     @abstractmethod
     def get_system_prompt_versions(self, agent_spec_name: str) -> list[SystemPromptVersion]: ...
+
+    @abstractmethod
+    def save_stress_profile(self, profile: StressProfile) -> None: ...
+
+    @abstractmethod
+    def get_stress_profile(self, agent_spec_name: str) -> StressProfile | None: ...

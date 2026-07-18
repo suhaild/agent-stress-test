@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from agent_stress_test.config import load_agent_spec
-from agent_stress_test.models import AgentResponse, Message, Node, Verdict
+from agent_stress_test.models import (
+    AgentResponse,
+    Message,
+    Node,
+    ProfilePersona,
+    StressProfile,
+    Verdict,
+)
 from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.orchestration.search import (
     Frontier,
@@ -17,8 +24,10 @@ from agent_stress_test.orchestration.search import (
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import TargetAgent
 from agent_stress_test.providers.fake import FakeLLMProvider
+from agent_stress_test.providers.shaped_fake import ShapedFakeLLM
 from agent_stress_test.reasoning.judge import RulesJudge, build_checks
 from agent_stress_test.reasoning.simulator import Simulator, default_registry
+from agent_stress_test.store.sqlite_store import SqliteStore
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.sample_agent import SampleAgent
 
@@ -240,18 +249,29 @@ def test_target_calls_are_bounded_by_budget(sample_agent_spec_path):
 
 # --- Full loop end-to-end via the runner ---------------------------------
 
+_END_TO_END_BUDGET = 2
+
+
+def _always_self_refunds(conversation: list[Message]) -> str:
+    """A trivially broken target for exercising build_runner()'s full wiring
+    end to end. Always violates no-self-refund, regardless of what the
+    DeepEval-simulated user actually said — under the schema-aware fake
+    that's generic placeholder text, not the old tactic-specific markers
+    (see planted_fn above, still exercised depth-conditionally against the
+    legacy marker-based Simulator by test_search_finds_planted_failure).
+    """
+    return "Sure — I've already refunded your card."
+
 
 def run_once(spec_path: Path):
     spec = load_agent_spec(spec_path)
-    # sample_n defaults to 3 (>= 2), so build_runner() builds a self-consistency
-    # scorer automatically, resampling this same target — no separate provider
-    # needed for it now that the scorer calls the target directly.
     runner = build_runner(
         agent_spec=spec,
-        target=PythonFunctionAgent(planted_fn),
-        sim_provider=FakeLLMProvider(),
+        target=PythonFunctionAgent(_always_self_refunds),
+        sim_provider=ShapedFakeLLM(),
+        sample_n=1,  # no consistency scorer needed to exercise this wiring
     )
-    return runner.run(provider_name="fake", budget=3)
+    return runner.run(provider_name="fake", budget=_END_TO_END_BUDGET)
 
 
 def test_end_to_end_run_completes_and_populates_the_tree(sample_agent_spec_path):
@@ -261,9 +281,12 @@ def test_end_to_end_run_completes_and_populates_the_tree(sample_agent_spec_path)
     assert result.run.started_at is not None and result.run.completed_at is not None
     assert 0.0 <= result.run.final_score <= 1.0  # reliability score, populated in Phase 7
 
-    assert len(result.tree.roots()) == 1
-    root = result.tree.roots()[0]
-    assert len(result.tree.children(root.id)) == TACTIC_COUNT
+    # One independent root per persona — DeepEvalConversationSearch (see
+    # orchestration/deepeval_search.py) always starts each persona fresh from
+    # its own opening line, so unlike the old tactic-branching engine
+    # there's no single shared root the personas branch off of.
+    assert len(result.tree.roots()) == TACTIC_COUNT
+    assert len(result.tree.nodes()) == TACTIC_COUNT * _END_TO_END_BUDGET
 
     # Every node was judged and scored; instability is a bounded float.
     assert result.tree.all_verdicts()
@@ -271,7 +294,7 @@ def test_end_to_end_run_completes_and_populates_the_tree(sample_agent_spec_path)
         assert isinstance(node.instability_score, float)
         assert 0.0 <= node.instability_score <= 1.0
 
-    # The planted failure is found through the runner too.
+    # The always-broken target is caught through the runner too.
     assert any(v.rule_id == "no-self-refund" for v in result.failures)
 
 
@@ -289,13 +312,103 @@ def test_end_to_end_run_is_deterministic(sample_agent_spec_path):
     assert fingerprint(first) == fingerprint(second)
 
 
+# --- build_runner() consumes an approved StressProfile's personas ---------
+
+
+def test_build_runner_drives_a_run_with_a_profile_persona_by_name(sample_agent_spec_path):
+    spec = load_agent_spec(sample_agent_spec_path)
+    profile = StressProfile(
+        agent_spec_name=spec.name,
+        personas=[
+            ProfilePersona(
+                name="symptom-minimizer",
+                scenario="A patient downplays a serious symptom.",
+                user_description="A patient who minimizes their symptoms.",
+            )
+        ],
+    )
+    with SqliteStore() as store:
+        store.save_stress_profile(profile)
+        runner = build_runner(
+            agent_spec=spec,
+            target=PythonFunctionAgent(lambda conversation: "Happy to help."),
+            sim_provider=ShapedFakeLLM(),
+            store=store,
+            tactics=["symptom-minimizer"],
+            sample_n=1,
+        )
+
+        result = runner.run(provider_name="fake", budget=1)
+
+    [node] = result.tree.nodes()
+    assert node.tactic == "symptom-minimizer"
+
+
+def test_build_runner_defaults_to_bundled_plus_profile_personas_with_no_explicit_tactics(
+    sample_agent_spec_path,
+):
+    spec = load_agent_spec(sample_agent_spec_path)
+    profile = StressProfile(
+        agent_spec_name=spec.name,
+        personas=[ProfilePersona(name="custom-persona", scenario="s", user_description="u")],
+    )
+    with SqliteStore() as store:
+        store.save_stress_profile(profile)
+        runner = build_runner(
+            agent_spec=spec,
+            target=PythonFunctionAgent(lambda conversation: "Happy to help."),
+            sim_provider=ShapedFakeLLM(),
+            store=store,
+            sample_n=1,
+        )
+
+        result = runner.run(provider_name="fake", budget=1)
+
+    tactics_run = {node.tactic for node in result.tree.nodes()}
+    assert tactics_run == set(default_registry().names()) | {"custom-persona"}
+
+
+def test_build_runner_without_a_profile_only_runs_the_bundled_tactics(sample_agent_spec_path):
+    spec = load_agent_spec(sample_agent_spec_path)
+    with SqliteStore() as store:  # no profile ever saved for this spec
+        runner = build_runner(
+            agent_spec=spec,
+            target=PythonFunctionAgent(lambda conversation: "Happy to help."),
+            sim_provider=ShapedFakeLLM(),
+            store=store,
+            sample_n=1,
+        )
+
+        result = runner.run(provider_name="fake", budget=1)
+
+    tactics_run = {node.tactic for node in result.tree.nodes()}
+    assert tactics_run == set(default_registry().names())
+
+
+def test_build_runner_without_a_store_ignores_profiles_entirely(sample_agent_spec_path):
+    # No store at all (store=None, the parameter's default) must behave
+    # exactly as before this wiring existed — no crash, bundled tactics only.
+    spec = load_agent_spec(sample_agent_spec_path)
+    runner = build_runner(
+        agent_spec=spec,
+        target=PythonFunctionAgent(lambda conversation: "Happy to help."),
+        sim_provider=ShapedFakeLLM(),
+        sample_n=1,
+    )
+
+    result = runner.run(provider_name="fake", budget=1)
+
+    tactics_run = {node.tactic for node in result.tree.nodes()}
+    assert tactics_run == set(default_registry().names())
+
+
 # --- Usage metering (A5) ---------------------------------------------------
 
 
 def test_offline_run_populates_run_usage_token_counts_at_zero_cost(sample_agent_spec_path):
     spec = load_agent_spec(sample_agent_spec_path)
     llm = FakeLLMProvider()
-    sim_llm = FakeLLMProvider()
+    sim_llm = ShapedFakeLLM()
     runner = build_runner(
         agent_spec=spec,
         target=SampleAgent(spec, llm),
@@ -320,7 +433,7 @@ def test_run_without_an_llm_kwarg_leaves_primary_usage_at_zero(sample_agent_spec
     runner = build_runner(
         agent_spec=spec,
         target=PythonFunctionAgent(lambda conversation: "a scripted reply"),
-        sim_provider=FakeLLMProvider(),
+        sim_provider=ShapedFakeLLM(),
         sample_n=1,
     )
 

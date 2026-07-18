@@ -1,0 +1,20 @@
+{%- set rule_id = rule.id if rule is defined and rule else '' -%}
+{%- set text = rule.text if rule is defined and rule else '' -%}
+{%- set severity = rule.severity if rule is defined and rule else 'major' -%}
+<div class="rule-row panel p-4 space-y-2" style="position: relative;">
+  <button type="button" class="btn-ghost text-xs" style="position: absolute; top: .6rem; right: .6rem;"
+          @click="$el.closest('.rule-row').remove()">Remove</button>
+  <input type="hidden" name="rule_id" value="{{ rule_id }}">
+  <div>
+    <label class="field-label block mb-1">Rule Text</label>
+    <textarea name="rule_text" rows="2" class="field-input text-xs">{{ text }}</textarea>
+  </div>
+  <div style="max-width: 12rem;">
+    <label class="field-label block mb-1">Severity</label>
+    <select name="rule_severity" class="field-input text-xs">
+      <option value="critical" {% if severity == "critical" %}selected{% endif %}>critical</option>
+      <option value="major" {% if severity == "major" %}selected{% endif %}>major</option>
+      <option value="minor" {% if severity == "minor" %}selected{% endif %}>minor</option>
+    </select>
+  </div>
+</div>

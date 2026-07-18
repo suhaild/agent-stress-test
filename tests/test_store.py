@@ -5,10 +5,17 @@ import pytest
 
 from agent_stress_test.composition import _load_bundle
 from agent_stress_test.config import load_agent_spec
-from agent_stress_test.models import Message, RegressionCase, SystemPromptVersion
+from agent_stress_test.models import (
+    Message,
+    ProfilePersona,
+    RegressionCase,
+    Rule,
+    StressProfile,
+    SystemPromptVersion,
+)
 from agent_stress_test.orchestration.reliability import score_run
 from agent_stress_test.orchestration.runner import build_runner
-from agent_stress_test.providers.fake import FakeLLMProvider
+from agent_stress_test.providers.shaped_fake import ShapedFakeLLM
 from agent_stress_test.store.sqlite_store import SqliteStore
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.tool_calling_verification_agent import (
@@ -40,10 +47,11 @@ def run_with_store(spec_path: Path, store: SqliteStore):
     runner = build_runner(
         agent_spec=spec,
         target=PythonFunctionAgent(planted_fn),
-        sim_provider=FakeLLMProvider(),
+        sim_provider=ShapedFakeLLM(),
         store=store,
+        sample_n=1,
     )
-    return runner.run(provider_name="fake", budget=3)
+    return runner.run(provider_name="fake", budget=2)
 
 
 # --- Round-trip: a run reloads with identical structure ------------------
@@ -184,6 +192,55 @@ def test_system_prompt_versions_are_returned_most_recent_first(tmp_path):
         assert [v.system_prompt for v in versions] == ["Second.", "First."]
 
 
+# --- Stress profiles (B4) --------------------------------------------------
+
+
+def test_stress_profile_round_trips_and_filters_by_agent(tmp_path):
+    db = tmp_path / "runs.sqlite"
+    profile = StressProfile(
+        agent_spec_name="sample_support",
+        personas=[
+            ProfilePersona(name="hostile", scenario="a scenario", user_description="a user")
+        ],
+        candidate_rules=[Rule(id="candidate-1", text="Never do X.", severity="major")],
+    )
+
+    with SqliteStore(db) as store:
+        store.save_stress_profile(profile)
+
+    with SqliteStore(db) as reloaded:
+        assert reloaded.get_stress_profile("sample_support") == profile
+        assert reloaded.get_stress_profile("some_other_agent") is None
+
+
+def test_stress_profile_get_returns_the_most_recently_saved_one(tmp_path):
+    db = tmp_path / "runs.sqlite"
+    first = StressProfile(agent_spec_name="sample_support")
+    second = StressProfile(agent_spec_name="sample_support")
+
+    with SqliteStore(db) as store:
+        store.save_stress_profile(first)
+        store.save_stress_profile(second)
+
+        assert store.get_stress_profile("sample_support") == second
+
+
+def test_stress_profile_save_overwrites_in_place_by_id(tmp_path):
+    db = tmp_path / "runs.sqlite"
+    profile = StressProfile(agent_spec_name="sample_support")
+
+    with SqliteStore(db) as store:
+        store.save_stress_profile(profile)
+        edited = profile.model_copy(
+            update={"personas": [ProfilePersona(name="x", scenario="s", user_description="u")]}
+        )
+        store.save_stress_profile(edited)
+
+        result = store.get_stress_profile("sample_support")
+        assert result.id == profile.id
+        assert len(result.personas) == 1
+
+
 # --- Structured tool-call persistence (A4) --------------------------------
 
 
@@ -197,7 +254,7 @@ def test_tool_calls_with_wrong_arguments_persist_structured_and_reload_via_load_
         runner = build_runner(
             agent_spec=spec,
             target=PythonFunctionAgent(tool_calling_verification_agent),
-            sim_provider=FakeLLMProvider(),
+            sim_provider=ShapedFakeLLM(),
             store=store,
             sample_n=1,
         )

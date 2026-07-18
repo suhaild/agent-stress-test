@@ -14,13 +14,14 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from agent_stress_test.models import AgentSpec, Message, Run, Verdict
+from agent_stress_test.orchestration.deepeval_search import DeepEvalConversationSearch
 from agent_stress_test.orchestration.reliability import ReliabilityReport, score_run
-from agent_stress_test.orchestration.search import GreedyBestFirstSearch, SearchStrategy
+from agent_stress_test.orchestration.search import SearchStrategy
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import LLMProvider, Store, TargetAgent
 from agent_stress_test.reasoning.consistency import ConsistencyScorer
 from agent_stress_test.reasoning.judge import Judge, build_two_tier_judge
-from agent_stress_test.reasoning.simulator import Simulator
+from agent_stress_test.reasoning.profiler import to_conversational_golden
 
 _DEFAULT_SEED: list[Message] = [
     Message(role="user", content="Hi, I need help with my recent order.")
@@ -116,6 +117,22 @@ class Runner:
         self._store.save_run(run)
 
 
+def _profile_extra_personas(store: Store | None, agent_spec_name: str) -> dict[str, object]:
+    """This agent's own approved ``StressProfile`` personas, converted to
+    DeepEval's persona shape — or ``{}`` if there's no store or no profile
+    yet. Kept loosely typed (see ``DeepEvalConversationSearch.__init__``'s
+    ``extra_personas`` docstring) so this module never needs to import
+    ``deepeval`` itself; ``to_conversational_golden`` is the one reasoning-
+    layer function that actually does.
+    """
+    if store is None:
+        return {}
+    profile = store.get_stress_profile(agent_spec_name)
+    if profile is None:
+        return {}
+    return {persona.name: to_conversational_golden(persona) for persona in profile.personas}
+
+
 def build_runner(
     *,
     agent_spec: AgentSpec,
@@ -150,16 +167,33 @@ def build_runner(
     resamples ``target``), never used to build anything here. Omit it for a
     target that isn't LLM-backed at all (``HttpAgent``, a scripted Python
     callable, ...) and ``Run.usage.primary`` simply stays at zero.
+
+    The search strategy is ``DeepEvalConversationSearch`` (see
+    ``orchestration/deepeval_search.py``): one full DeepEval-simulated
+    conversation per persona (``budget`` = turns per conversation), not the
+    old per-node judge-driven ``GreedyBestFirstSearch`` (still in
+    ``orchestration/search.py``, kept for direct use/testing, just no longer
+    what this composition root wires by default).
+
+    When ``store`` holds an approved ``StressProfile`` for ``agent_spec``
+    (see ``reasoning/profiler.py``), its personas are automatically merged in
+    as extra tactics alongside the bundled 5 — no separate opt-in needed,
+    since picking a persona to run against has no lasting effect on the spec
+    (unlike its candidate rules, which stay proposed until a human copies
+    them into ``agent_spec.rules`` by hand). ``tactics``, when given
+    explicitly, may name either a bundled tactic or one of this profile's
+    own persona names.
     """
-    simulator = Simulator(sim_provider)
     resolved_judge = judge if judge is not None else build_two_tier_judge(agent_spec, sim_provider)
     scorer = ConsistencyScorer(target) if sample_n >= 2 else None
-    strategy = GreedyBestFirstSearch(
-        simulator,
+    extra_personas = _profile_extra_personas(store, agent_spec.name)
+    strategy = DeepEvalConversationSearch(
         target,
+        sim_provider,
         resolved_judge,
         scorer,
         tactics=tactics,
         sample_n=sample_n,
+        extra_personas=extra_personas,
     )
     return Runner(agent_spec, strategy, store, sim_provider=sim_provider, llm=llm)

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Stress Profile — {{ agent_spec_name }}{% endblock %}
+{% block content %}
+<div class="mb-8 reveal">
+  <h1 class="brand-mark text-2xl md:text-3xl">{{ agent_spec_name }}</h1>
+  <p class="font-mono text-xs text-[var(--ink-faint)] mt-1.5">Stress Profile</p>
+</div>
+
+<section class="mb-8 reveal" style="animation-delay: 60ms">
+  <form hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/profile/generate"
+        hx-target="#profile-editor" hx-swap="innerHTML"
+        hx-confirm="{% if profile %}Regenerate this agent's stress profile? Unsaved edits below will be replaced.{% else %}Generate a stress profile for this agent?{% endif %}"
+        class="panel p-6 flex flex-wrap items-end gap-4">
+    <div class="flex-1 min-w-[14rem]">
+      <label class="field-label block mb-1">Profiler Model</label>
+      <p class="field-help mb-1.5">The LLM that proposes personas + candidate rules for this agent.</p>
+      <input type="text" name="provider" value="fake" class="field-input font-mono">
+    </div>
+    <button type="submit" class="btn-stamp">{% if profile %}Regenerate{% else %}Generate{% endif %} Profile →</button>
+  </form>
+  <p class="font-mono text-[.68rem] text-[var(--ink-faint)] mt-2">
+    Proposed only — nothing here is applied automatically. Candidate rules never get copied into this
+    agent's own rules without a human doing it by hand.
+  </p>
+</section>
+
+<section class="reveal" style="animation-delay: 120ms">
+  <div id="profile-editor">
+    {% include "fragments/profile_editor.html" %}
+  </div>
+</section>
+{% endblock %}

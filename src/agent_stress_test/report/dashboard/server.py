@@ -38,7 +38,15 @@ from agent_stress_test.composition import (
     cluster_and_persist,
 )
 from agent_stress_test.config import apply_system_prompt, load_agent_spec, load_settings
-from agent_stress_test.models import AgentSpec, Cluster, Run, SystemPromptVersion, Verdict
+from agent_stress_test.models import (
+    AgentSpec,
+    Cluster,
+    ProfilePersona,
+    Rule,
+    Run,
+    SystemPromptVersion,
+    Verdict,
+)
 from agent_stress_test.orchestration.regression import (
     RegressionRunner,
     promote_clusters_to_cases,
@@ -48,6 +56,7 @@ from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.orchestration.search import SEVERITY_WEIGHT
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.reasoning.judge import build_two_tier_judge
+from agent_stress_test.reasoning.profiler import AgentProfiler
 from agent_stress_test.reasoning.remediation import RemediationSuggester
 from agent_stress_test.reasoning.simulator import default_registry
 from agent_stress_test.store.migrations import ensure_current_or_raise
@@ -87,6 +96,23 @@ def list_tactics() -> list[dict[str, str]]:
         {"id": name, "description": registry.get(name).description}
         for name in registry.names()
     ]
+
+
+def _persona_options_for_spec(spec: AgentSpec, store: SqliteStore) -> list[dict[str, str]]:
+    """The run form's per-agent persona picker options: this agent's own
+    stress profile personas if one has been generated, else the bundled
+    tactic library.
+
+    Fully consumable by a real run: ``build_runner()`` (see
+    ``orchestration/runner.py``'s ``_profile_extra_personas``) merges this
+    same spec's approved profile personas in automatically, and
+    ``_resolve_tactics``'s ``extra_valid`` (see ``_execute_run`` below)
+    accepts a profile-sourced name explicitly selected here.
+    """
+    profile = store.get_stress_profile(spec.name)
+    if profile is not None and profile.personas:
+        return [{"id": p.name, "description": p.scenario} for p in profile.personas]
+    return list_tactics()
 
 
 def list_models() -> list[dict[str, str]]:
@@ -302,7 +328,10 @@ def _execute_run(
         )
         llm = _build_provider(provider)
         target = _build_target(args, spec, llm)
-        tactics = _resolve_tactics(tactics_arg)
+        with SqliteStore(db_path) as store:
+            profile = store.get_stress_profile(spec.name)
+        extra_valid = [persona.name for persona in profile.personas] if profile else []
+        tactics = _resolve_tactics(tactics_arg, extra_valid=extra_valid)
         sim_provider_name = _resolve_sim_provider_name(args)
         sim_llm = llm if sim_provider_name == provider else _build_provider(sim_provider_name)
 
@@ -565,6 +594,19 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     def get_agent_specs() -> list[dict[str, str]]:
         return list_agent_specs()
 
+    @app.get("/agent-specs/personas", response_class=HTMLResponse)
+    def get_personas_picker(request: Request, agent_spec_id: str) -> HTMLResponse:
+        try:
+            path = _resolve_agent_spec_path(agent_spec_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        spec = load_agent_spec(path)
+        with SqliteStore(app.state.db_path) as store:
+            options = _persona_options_for_spec(spec, store)
+        return templates.TemplateResponse(
+            request, "fragments/personas_picker.html", {"tactics": options}
+        )
+
     @app.post("/runs")
     def post_run(
         agent_spec_id: str = Form(...),
@@ -768,6 +810,84 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                 "agent_spec_name": agent_spec_name,
                 "new_system_prompt": new_spec.system_prompt,
             },
+        )
+
+    @app.get("/agent-specs/{agent_spec_name}/profile", response_class=HTMLResponse)
+    def get_profile(request: Request, agent_spec_name: str) -> HTMLResponse:
+        try:
+            _find_agent_spec_by_name(agent_spec_name)  # 404s on an unknown spec
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        with SqliteStore(app.state.db_path) as store:
+            profile = store.get_stress_profile(agent_spec_name)
+        return templates.TemplateResponse(
+            request,
+            "profile.html",
+            {"agent_spec_name": agent_spec_name, "profile": profile, "models": list_models()},
+        )
+
+    @app.post("/agent-specs/{agent_spec_name}/profile/generate", response_class=HTMLResponse)
+    def post_generate_profile(
+        request: Request, agent_spec_name: str, provider: str = Form("fake")
+    ) -> HTMLResponse:
+        load_settings()
+        try:
+            spec = _find_agent_spec_by_name(agent_spec_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        try:
+            profile = AgentProfiler(_build_provider(provider)).profile(spec)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        with SqliteStore(app.state.db_path) as store:
+            store.save_stress_profile(profile)
+
+        return templates.TemplateResponse(
+            request,
+            "fragments/profile_editor.html",
+            {"agent_spec_name": agent_spec_name, "profile": profile},
+        )
+
+    @app.post("/agent-specs/{agent_spec_name}/profile/save", response_class=HTMLResponse)
+    async def post_save_profile(request: Request, agent_spec_name: str) -> HTMLResponse:
+        form = await request.form()
+        names = form.getlist("persona_name")
+        scenarios = form.getlist("persona_scenario")
+        user_descriptions = form.getlist("persona_user_description")
+        rule_ids = form.getlist("rule_id")
+        rule_texts = form.getlist("rule_text")
+        rule_severities = form.getlist("rule_severity")
+
+        with SqliteStore(app.state.db_path) as store:
+            existing = store.get_stress_profile(agent_spec_name)
+            if existing is None:
+                raise HTTPException(
+                    status_code=404, detail=f"No stress profile for '{agent_spec_name}' yet."
+                )
+
+            updated = existing.model_copy(
+                update={
+                    "personas": [
+                        ProfilePersona(name=n, scenario=s, user_description=u)
+                        for n, s, u in zip(names, scenarios, user_descriptions)
+                        if n.strip() and s.strip() and u.strip()
+                    ],
+                    "candidate_rules": [
+                        Rule(id=rid or str(uuid4()), text=t, severity=sev)
+                        for rid, t, sev in zip(rule_ids, rule_texts, rule_severities)
+                        if t.strip()
+                    ],
+                }
+            )
+            store.save_stress_profile(updated)
+
+        return templates.TemplateResponse(
+            request,
+            "fragments/profile_editor.html",
+            {"agent_spec_name": agent_spec_name, "profile": updated},
         )
 
     @app.get("/agent-specs/{agent_spec_name}/regression", response_class=HTMLResponse)

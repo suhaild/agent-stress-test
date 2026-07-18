@@ -4,9 +4,22 @@ from datetime import datetime, timezone
 
 import pytest
 
-from agent_stress_test.cli import _DEFAULT_SIM_MODEL, _resolve_sim_provider_name, main
+from agent_stress_test.cli import (
+    _DEFAULT_SIM_MODEL,
+    _resolve_sim_provider_name,
+    _resolve_tactics,
+    main,
+)
 from agent_stress_test.config import load_agent_spec
-from agent_stress_test.models import Cluster, Message, Node, Run, Verdict
+from agent_stress_test.models import (
+    Cluster,
+    Message,
+    Node,
+    ProfilePersona,
+    Run,
+    StressProfile,
+    Verdict,
+)
 from agent_stress_test.orchestration.reliability import score_run
 from agent_stress_test.store.sqlite_store import SqliteStore
 
@@ -39,6 +52,46 @@ def test_sim_provider_explicit_override_wins():
     )
 
 
+def test_resolve_tactics_with_no_arg_returns_only_bundled_tactics_by_default():
+    assert set(_resolve_tactics(None)) == {
+        "self-contradiction",
+        "urgency-pressure",
+        "hostile",
+        "stale-recall",
+        "scope-expansion",
+    }
+
+
+def test_resolve_tactics_rejects_a_name_outside_the_bundled_registry():
+    with pytest.raises(ValueError, match="Unknown tactic"):
+        _resolve_tactics("symptom-minimizer")
+
+
+def test_resolve_tactics_accepts_an_extra_valid_name():
+    # A profile-sourced persona name — accepted only because it's passed as
+    # extra_valid, exactly what build_runner()'s callers do once they've
+    # peeked at the spec's own StressProfile.
+    assert _resolve_tactics("symptom-minimizer", extra_valid=["symptom-minimizer"]) == [
+        "symptom-minimizer"
+    ]
+
+
+def test_resolve_tactics_still_rejects_a_name_not_in_bundled_or_extra():
+    with pytest.raises(ValueError, match="Unknown tactic"):
+        _resolve_tactics("nonexistent-persona", extra_valid=["symptom-minimizer"])
+
+
+def test_resolve_tactics_with_no_arg_includes_extra_valid_by_default():
+    resolved = _resolve_tactics(None, extra_valid=["symptom-minimizer"])
+    assert "symptom-minimizer" in resolved
+    assert "hostile" in resolved
+
+
+def test_resolve_tactics_extra_valid_does_not_duplicate_a_bundled_name():
+    resolved = _resolve_tactics(None, extra_valid=["hostile"])
+    assert resolved.count("hostile") == 1
+
+
 def test_cli_run_executes_against_the_fake_provider(tmp_path, sample_agent_spec_path, capsys):
     db_path = tmp_path / "runs.sqlite"
 
@@ -64,6 +117,51 @@ def test_cli_run_executes_against_the_fake_provider(tmp_path, sample_agent_spec_
 
     with SqliteStore(db_path) as store:
         assert store.get_run(match.group(1)) is not None
+
+
+def test_cli_run_accepts_a_tactic_name_from_the_agent_own_stress_profile(
+    tmp_path, sample_agent_spec_path, capsys
+):
+    db_path = tmp_path / "runs.sqlite"
+    spec = load_agent_spec(sample_agent_spec_path)
+    with SqliteStore(db_path) as store:
+        store.save_stress_profile(
+            StressProfile(
+                agent_spec_name=spec.name,
+                personas=[
+                    ProfilePersona(
+                        name="symptom-minimizer",
+                        scenario="A patient downplays a serious symptom.",
+                        user_description="A patient who minimizes their symptoms.",
+                    )
+                ],
+            )
+        )
+
+    exit_code = main(
+        [
+            "run",
+            "--agent-spec",
+            str(sample_agent_spec_path),
+            "--provider",
+            "fake",
+            "--db",
+            str(db_path),
+            "--budget",
+            "1",
+            "--tactics",
+            "symptom-minimizer",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    match = _RUN_ID_RE.search(out)
+    assert match, f"expected a 'Run ID: ...' line, got:\n{out}"
+
+    with SqliteStore(db_path) as store:
+        [node] = store.get_nodes(match.group(1))
+    assert node.tactic == "symptom-minimizer"
 
 
 def _seed_store(store: SqliteStore, spec_path) -> tuple[str, Verdict]:

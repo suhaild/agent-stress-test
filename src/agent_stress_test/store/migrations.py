@@ -36,6 +36,7 @@ from agent_stress_test.models import (
     Node,
     RegressionCase,
     Run,
+    StressProfile,
     SystemPromptVersion,
     Verdict,
 )
@@ -49,6 +50,7 @@ _TABLES_TO_MODELS: dict[str, type[BaseModel]] = {
     "clusters": Cluster,
     "regression_cases": RegressionCase,
     "system_prompt_versions": SystemPromptVersion,
+    "stress_profiles": StressProfile,
 }
 
 _VERSION_TABLE_DDL = (
