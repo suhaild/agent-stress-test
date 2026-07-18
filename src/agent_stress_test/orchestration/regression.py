@@ -74,7 +74,9 @@ class RegressionRunner:
 
     def replay(self, case: RegressionCase) -> RegressionResult:
         response = self._target.respond(case.messages)
-        verdicts = self._judge.judge(response, run_id=case.source_run_id, node_id=case.id)
+        verdicts = self._judge.judge(
+            response, run_id=case.source_run_id, node_id=case.id, conversation=case.messages
+        )
         match = next((v for v in verdicts if v.rule_id == case.rule_id), None)
         if match is None:
             return RegressionResult(

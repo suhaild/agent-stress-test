@@ -368,7 +368,23 @@ class Node(BaseModel):
 
 
 class Verdict(BaseModel):
-    """A judge result attached to a node."""
+    """A judge result attached to a node.
+
+    ``scope`` says what the verdict is *about*: ``"rule"`` (the default — an
+    AgentSpec behavioral rule, tier-1 or tier-2, keyed by ``rule_id``),
+    ``"tool"`` (a Phase-C tool-call metric, e.g. argument correctness — has no
+    ``rule_id`` and is rendered inline with the node's tool-call block, not as
+    a generic rule verdict), ``"task"`` (a Phase-C whole-node task-completion
+    metric), or ``"conversation"`` (a Phase-C2 whole-conversation metric —
+    scores a full root-to-leaf persona conversation, not one node; ``node_id``
+    is the conversation's LEAF node, since ``tree.path_to_root()`` of that id
+    reconstructs exactly the conversation judged. ``rule_id`` is set for these
+    too — either a fixed metric name like ``"role_adherence"`` or, for the
+    per-rule conversational GEval, the AgentSpec rule's own id — so failures
+    stay distinguishable from one another and from plain node-scoped rule
+    verdicts). Defaulting to ``"rule"`` keeps every pre-C verdict and every
+    already-persisted row valid unchanged.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -381,6 +397,7 @@ class Verdict(BaseModel):
     tier: Literal["rules", "llm"]
     confidence: float = Field(ge=0.0, le=1.0)
     severity: Severity
+    scope: Literal["rule", "tool", "task", "conversation"] = "rule"
 
 
 class Cluster(BaseModel):

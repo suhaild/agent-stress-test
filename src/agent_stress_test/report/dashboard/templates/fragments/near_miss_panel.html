@@ -1,0 +1,34 @@
+{% if near_misses %}
+<div class="panel overflow-hidden">
+  <table class="w-full text-sm">
+    <thead>
+      <tr style="background: var(--bg-panel-raised);">
+        <th class="field-label text-left px-4 py-3">Tactic</th>
+        <th class="field-label text-left px-4 py-3">Proximity</th>
+        <th class="field-label text-left px-4 py-3">Node</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for near_miss in near_misses %}
+      <tr{% if not loop.first %} style="border-top: 1px solid var(--wire);"{% endif %}>
+        <td class="px-4 py-3 font-semibold text-[var(--ink)]">{{ near_miss.tactic or "—" }}</td>
+        <td class="px-4 py-3">
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-xs text-[var(--ink-dim)] w-9 inline-block">{{ "%.0f"|format(near_miss.proximity * 100) }}%</span>
+            <svg width="120" height="10" viewBox="0 0 120 10" role="img" aria-label="proximity {{ '%.0f'|format(near_miss.proximity * 100) }}%">
+              <rect x="0" y="0" width="120" height="10" style="fill: var(--wire);"></rect>
+              <rect x="0" y="0" width="{{ near_miss.proximity * 120 }}" height="10" style="fill: var(--warn);"></rect>
+            </svg>
+          </div>
+        </td>
+        <td class="px-4 py-3 font-mono text-xs text-[var(--ink-faint)]">{{ near_miss.node_id }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel p-5 text-sm" style="color: var(--pass);">
+  No near-misses — nothing came close to failing.
+</div>
+{% endif %}

@@ -7,7 +7,7 @@ from agent_stress_test.orchestration.deepeval_search import DeepEvalConversation
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.providers.shaped_fake import ShapedFakeLLM
 from agent_stress_test.reasoning.consistency import ConsistencyScorer
-from agent_stress_test.reasoning.judge import RulesJudge, build_checks
+from agent_stress_test.reasoning.judge import RulesJudge, build_checks, build_conversation_judge
 from agent_stress_test.reasoning.simulator import default_registry
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.tool_calling_verification_agent import (
@@ -185,6 +185,55 @@ def test_search_with_no_explicit_tactics_defaults_to_bundled_plus_extra_personas
     assert {node.tactic for node in tree.nodes()} == set(default_registry().names()) | {
         "custom-persona"
     }
+
+
+# --- conversation_judge: whole-conversation verdicts, keyed by path (C2) --
+
+
+def test_search_attaches_conversation_verdicts_to_the_chains_leaf_node_only(
+    sample_agent_spec_path,
+):
+    spec = load_agent_spec(sample_agent_spec_path)
+    target = PythonFunctionAgent(lambda conversation: "Happy to help.")
+    search = _make_search(
+        sample_agent_spec_path,
+        target,
+        tactics=["hostile"],
+        conversation_judge=build_conversation_judge(ShapedFakeLLM(), spec),
+    )
+    tree = ConversationTree("run-1")
+
+    search.search(tree, [], budget=3)
+
+    [root] = tree.roots()
+    chain = [root]
+    while tree.children(chain[-1].id):
+        [child] = tree.children(chain[-1].id)
+        chain.append(child)
+    leaf = chain[-1]
+
+    # tree.path_to_root(leaf.id) IS the exact conversation the conversation
+    # judge scored -- confirming verdicts are keyed by path, not by node.
+    assert tree.path_to_root(leaf.id) == chain
+
+    leaf_scopes = {v.scope for v in tree.verdicts(leaf.id)}
+    assert "conversation" in leaf_scopes
+    assert "rule" in leaf_scopes  # the leaf's own per-turn verdicts survive too
+
+    for node in chain[:-1]:
+        assert "conversation" not in {v.scope for v in tree.verdicts(node.id)}
+
+
+def test_search_without_a_conversation_judge_attaches_no_conversation_verdicts(
+    sample_agent_spec_path,
+):
+    target = PythonFunctionAgent(lambda conversation: "Happy to help.")
+    search = _make_search(sample_agent_spec_path, target, tactics=["hostile"])
+    tree = ConversationTree("run-1")
+
+    search.search(tree, [], budget=2)
+
+    assert not any(v.scope == "conversation" for v in tree.all_verdicts())
 
 
 def test_search_extra_personas_do_not_shadow_the_bundled_registry(sample_agent_spec_path):

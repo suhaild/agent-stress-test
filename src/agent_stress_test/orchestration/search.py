@@ -9,6 +9,26 @@ later (Phase 11) without touching the runner.
 The frontier is ordered by ``instability + judge proximity-to-failure``: nodes
 whose replies are shaky or already show (or nearly show) a rule violation are
 expanded first, because that is where more failures tend to live.
+
+Phase C5 sharpens that steering signal without adding any new dependency
+(``ours``, no library import):
+  1. ``node_priority`` folds in a GRADED proximity, not just the discrete
+     severity of an outright failure — a passing LLM/metric-tier verdict that
+     barely cleared its own pass/fail threshold (low ``confidence``, see
+     ``graded_proximity``) is still worth probing further, not a clean 0.
+  2. the frontier explicitly PRUNES nodes whose priority falls below
+     ``prune_floor`` — off by default (``0.0``, nothing pruned, identical to
+     pre-C5 behavior) so a caller opts in deliberately rather than every
+     existing run's breadth silently changing.
+  3. a deflecting reply (refusal/non-answer/redirect — see
+     ``reasoning/judge.py``'s ``is_deflection``) is tracked as its OWN signal,
+     both nudging priority and reported on ``SearchResult.deflections`` —
+     distinct from a genuine rule pass, since dodging the question isn't the
+     same as answering it correctly.
+  4. the single closest near-miss (the highest-graded-proximity node that
+     never actually failed) is tracked across the whole search and reported
+     as ``SearchResult.near_miss`` — a first-class result, not just a number
+     buried in the tree.
 """
 
 import heapq
@@ -21,12 +41,17 @@ from agent_stress_test.models import Message, Node, Severity, Verdict
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import TargetAgent
 from agent_stress_test.reasoning.consistency import ConsistencyScorer
-from agent_stress_test.reasoning.judge import Judge
+from agent_stress_test.reasoning.judge import Judge, is_deflection
 from agent_stress_test.reasoning.simulator import Simulator, default_registry
 
 # How "fertile" a failure of each severity makes a node's region. Critical
 # failures point at the most valuable branches to keep expanding.
 SEVERITY_WEIGHT: dict[Severity, float] = {"minor": 0.34, "major": 0.67, "critical": 1.0}
+
+# How much a deflecting reply alone raises priority — a deflection hasn't
+# broken any specific rule, but an agent that dodges under pressure is still
+# worth probing further, roughly on par with a "major" outright failure.
+DEFLECTION_WEIGHT = 0.67
 
 
 def failure_proximity(verdicts: list[Verdict]) -> float:
@@ -34,15 +59,41 @@ def failure_proximity(verdicts: list[Verdict]) -> float:
 
     The max severity weight among *failed* verdicts, or 0.0 if none failed. A
     node that already carries a critical failure scores 1.0 — the most promising
-    region to keep probing.
+    region to keep probing. Kept as its own function (rather than folded into
+    ``graded_proximity`` below) because ``orchestration/reliability.py``'s
+    ``SeverityWeightedModel`` reuses this exact discrete formula for the
+    reliability score, which C5 deliberately leaves unchanged — only search
+    steering (``node_priority``) gets the graded near-miss upgrade.
     """
     weights = [SEVERITY_WEIGHT[v.severity] for v in verdicts if not v.passed]
     return max(weights, default=0.0)
 
 
+def graded_proximity(verdicts: list[Verdict]) -> float:
+    """How close this node is to failing, in [0, 1] — like ``failure_proximity``,
+    but a passing LLM/metric-tier verdict sitting close to its own pass/fail
+    threshold also counts as a near-miss instead of a clean 0.
+
+    A verdict's ``confidence`` is already a distance-from-threshold signal
+    (see ``reasoning/judge.py``'s ``_confidence_from_score``): low confidence
+    on a PASSING verdict means it barely cleared the bar. Deterministic
+    tier-1 rule checks always report ``confidence=1.0`` (see
+    ``DETERMINISTIC_CONFIDENCE``), so a passing tier-1 verdict correctly
+    contributes 0.0 here — a regex match has no "almost".
+    """
+    best = failure_proximity(verdicts)
+    for verdict in verdicts:
+        if verdict.passed and verdict.tier == "llm":
+            best = max(best, 1.0 - verdict.confidence)
+    return best
+
+
 def node_priority(node: Node, verdicts: list[Verdict]) -> float:
     """Search priority for a node, in [0, 2] (higher = expand sooner)."""
-    return (node.instability_score or 0.0) + failure_proximity(verdicts)
+    proximity = graded_proximity(verdicts)
+    if is_deflection(node.target_reply):
+        proximity = max(proximity, DEFLECTION_WEIGHT)
+    return (node.instability_score or 0.0) + proximity
 
 
 class Frontier:
@@ -72,11 +123,25 @@ class Frontier:
 
 @dataclass(frozen=True)
 class SearchResult:
-    """Summary of one search. The tree (Blackboard) holds the full detail."""
+    """Summary of one search. The tree (Blackboard) holds the full detail.
+
+    ``near_miss`` (Phase C5) is the passing node with the highest
+    ``graded_proximity`` seen anywhere in the search — the closest the target
+    came to failing without actually failing — or ``None`` if every node was
+    either a clean pass (0 proximity) or an outright failure (already in
+    ``failures``). ``deflections`` is every node id whose reply was flagged
+    by ``reasoning/judge.py``'s ``is_deflection`` — its own signal, tracked
+    separately so a deflection is never mistaken for a genuine rule pass.
+    Both default to "nothing found", so existing callers that build a
+    ``SearchResult`` without them (e.g. ``orchestration/deepeval_search.py``)
+    are unaffected.
+    """
 
     expansions: int
     nodes_created: int
     failures: list[Verdict] = field(default_factory=list)
+    near_miss: Node | None = None
+    deflections: list[str] = field(default_factory=list)
 
 
 class SearchStrategy(ABC):
@@ -96,6 +161,15 @@ class GreedyBestFirstSearch(SearchStrategy):
     extra target calls per node, so a caller may skip it to save cost/latency
     regardless of target type; without it instability is treated as 0.0 and
     priority is driven by judge proximity-to-failure alone.
+
+    ``prune_floor`` (Phase C5) drops a node from the frontier — it is still
+    created, judged, and counted in ``nodes_created``/``failures``, just never
+    expanded further — once its ``node_priority`` falls below the floor.
+    Defaults to ``0.0``, which prunes nothing (every priority is already
+    ``>= 0.0``): a target with zero signal anywhere still gets its full
+    budget of expansions by default, identical to pre-C5 behavior. Raise it
+    to actually skip low-value branches once ``node_priority`` is graded
+    finely enough (see ``graded_proximity``) to make that judgment call.
     """
 
     def __init__(
@@ -108,6 +182,7 @@ class GreedyBestFirstSearch(SearchStrategy):
         tactics: list[str] | None = None,
         sample_n: int = 3,
         max_concurrency: int = 5,
+        prune_floor: float = 0.0,
     ) -> None:
         self._simulator = simulator
         self._target = target
@@ -116,19 +191,34 @@ class GreedyBestFirstSearch(SearchStrategy):
         self._tactics = tactics if tactics is not None else default_registry().names()
         self._sample_n = sample_n
         self._max_concurrency = max_concurrency
+        self._prune_floor = prune_floor
 
     def search(
         self, tree: ConversationTree, seed_messages: list[Message], *, budget: int
     ) -> SearchResult:
         frontier = Frontier()
         failures: list[Verdict] = []
+        deflections: list[str] = []
         nodes_created = 0
+        near_miss: Node | None = None
+        near_miss_proximity = 0.0
+
+        def track(candidate: Node, candidate_verdicts: list[Verdict]) -> None:
+            nonlocal near_miss, near_miss_proximity
+            if is_deflection(candidate.target_reply):
+                deflections.append(candidate.id)
+            if any(not v.passed for v in candidate_verdicts):
+                return  # an outright failure, not a near-miss
+            proximity = graded_proximity(candidate_verdicts)
+            if proximity > near_miss_proximity:
+                near_miss, near_miss_proximity = candidate, proximity
 
         root_node, root_verdicts = self._compute(
             tree.run_id, seed_messages, parent_id=None, tactic=None
         )
         root = self._commit(tree, root_node, root_verdicts, failures=failures)
         nodes_created += 1
+        track(root, tree.verdicts(root.id))
         frontier.push(root.id, node_priority(root, tree.verdicts(root.id)))
 
         expansions = 0
@@ -138,10 +228,18 @@ class GreedyBestFirstSearch(SearchStrategy):
             expansions += 1
             nodes_created += len(children)
             for child in children:
-                frontier.push(child.id, node_priority(child, tree.verdicts(child.id)))
+                child_verdicts = tree.verdicts(child.id)
+                track(child, child_verdicts)
+                priority = node_priority(child, child_verdicts)
+                if priority >= self._prune_floor:
+                    frontier.push(child.id, priority)
 
         return SearchResult(
-            expansions=expansions, nodes_created=nodes_created, failures=failures
+            expansions=expansions,
+            nodes_created=nodes_created,
+            failures=failures,
+            near_miss=near_miss,
+            deflections=deflections,
         )
 
     def _expand(
@@ -210,7 +308,9 @@ class GreedyBestFirstSearch(SearchStrategy):
         else:
             node.instability_score = 0.0
 
-        verdicts = self._judge.judge(response, run_id=run_id, node_id=node.id)
+        verdicts = self._judge.judge(
+            response, run_id=run_id, node_id=node.id, conversation=messages
+        )
         return node, verdicts
 
     def _commit(

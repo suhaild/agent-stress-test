@@ -6,22 +6,28 @@ Pure presentation: every function here takes already-loaded domain objects
 to a ``Store``, a provider, or the filesystem — that keeps it trivially
 testable (render to a recording console and assert on the text) and keeps the
 hexagonal boundary intact (no ``litellm``, ``httpx``, or ``sqlite3`` here).
+
+The dashboard is the one real front end (every control and report surface
+lives there); this module's only remaining caller is ``cli.py``'s ``run``
+command, which prints a report after a scripted/no-browser run. The
+report/replay/regression/remediation/profile renderers that used to live
+here were retired along with their now-removed CLI commands — the dashboard
+covers all of that with no CLI-only functionality left behind.
 """
 
-import difflib
-
-import pysbd
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from agent_stress_test.models import Cluster, RegressionCase, Rule, Run, StressProfile, Verdict
-from agent_stress_test.orchestration.reliability import ReliabilityReport
-from agent_stress_test.orchestration.regression import RegressionResult
+from agent_stress_test.models import Cluster, Node, Run, Verdict
+from agent_stress_test.orchestration.reliability import (
+    NearMiss,
+    ReliabilityReport,
+    near_miss_ranking,
+)
 from agent_stress_test.orchestration.search import SEVERITY_WEIGHT
 from agent_stress_test.orchestration.tree import ConversationTree
-from agent_stress_test.reasoning.remediation import RemediationSuggestion
 
 _SEVERITY_STYLE = {"critical": "bold red", "major": "yellow", "minor": "cyan"}
 _ROLE_STYLE = {"system": "dim italic", "user": "bold magenta", "assistant": "bold white"}
@@ -35,21 +41,69 @@ def _score_style(score: float) -> str:
     return "bold red"
 
 
+_SEVERITY_MIX_BAR_WIDTH = 24
+_SEVERITY_ORDER = ("critical", "major", "minor")
+
+
+def _severity_mix_bar(breakdown: dict[str, int]) -> Text:
+    """A stacked bar (plain ASCII characters, no charting library — see Phase
+    C6's "SVG if no chart lib has landed" fallback, translated to Rich's
+    text-only surface) proportional to each severity's share of the failing
+    steps. Empty (no bar at all) when nothing failed.
+
+    Deliberately ``#``, not a Unicode block character (``█``): a real
+    ``Console()`` bound to a legacy Windows console (codepage cp1252, not
+    UTF-8) raises ``UnicodeEncodeError`` trying to write one — caught live by
+    actually running ``agent-stress-test run`` on Windows, not just the
+    recorded-console tests (``Console(record=True)`` never touches the real
+    OS console API, so it can't catch this class of bug).
+    """
+    total = sum(breakdown.values())
+    bar = Text()
+    if not total:
+        return bar
+    present = [
+        (severity, breakdown.get(severity, 0))
+        for severity in _SEVERITY_ORDER
+        if breakdown.get(severity)
+    ]
+    remaining = _SEVERITY_MIX_BAR_WIDTH
+    for index, (severity, count) in enumerate(present):
+        is_last = index == len(present) - 1
+        width = remaining if is_last else max(1, round(_SEVERITY_MIX_BAR_WIDTH * count / total))
+        remaining -= width
+        bar.append("#" * width, style=_SEVERITY_STYLE[severity])
+    return bar
+
+
 def render_reliability(console: Console, run: Run, report: ReliabilityReport) -> None:
-    """A headline reliability panel: the compounding score plus step counts."""
-    style = _score_style(report.score)
+    """A headline reliability panel: the compounding score, step counts, which
+    ``ScoringModel`` produced the number, and a per-severity breakdown."""
+    style = _score_style(report.score) if report.applicable else "dim"
     body = Text()
-    body.append(f"{report.score:.0%}\n", style=f"{style} underline")
-    body.append(
-        f"{report.failing_steps} of {report.total_steps} steps failed "
-        f"({report.per_step_failure_rate:.0%} per-step failure rate, "
-        f"compounded over ~{report.conversation_depth:.1f} turns)",
-        style="dim",
-    )
+    if not report.applicable:
+        body.append(
+            f"not measured — the '{report.model_name}' model has no relevant verdicts on this run",
+            style="dim italic",
+        )
+    else:
+        body.append(f"{report.score:.0%}\n", style=f"{style} underline")
+        body.append(
+            f"{report.failing_steps} of {report.total_steps} steps failed "
+            f"({report.per_step_failure_rate:.0%} per-step failure rate, "
+            f"compounded over ~{report.conversation_depth:.1f} turns)",
+            style="dim",
+        )
+        if report.failing_steps:
+            breakdown = ", ".join(
+                f"{severity}={count}" for severity, count in report.severity_breakdown.items()
+            )
+            body.append(f"\nfailing steps by severity: {breakdown}\n", style="dim")
+            body.append(_severity_mix_bar(report.severity_breakdown))
     console.print(
         Panel(
             body,
-            title=f"Reliability - {run.agent_spec.name} ({run.provider})",
+            title=f"Reliability (model: {report.model_name}) - {run.agent_spec.name} ({run.provider})",
             subtitle=f"run {run.id}",
             border_style=style,
         )
@@ -101,6 +155,19 @@ def _print_turn(console: Console, role: str, content: str) -> None:
     console.print(Text(f"{role}: ", style=_ROLE_STYLE.get(role, "")) + Text(content))
 
 
+def _print_assistant_turn(console: Console, node: Node) -> None:
+    """The assistant's reply, plus its instability badge (Phase C6 — the
+    field has been populated since Phase 5 but was never rendered anywhere;
+    styled by ``_score_style`` on ``1 - instability`` so a shaky reply reads
+    red, same color language as the reliability score).
+    """
+    line = Text("assistant: ", style=_ROLE_STYLE.get("assistant", "")) + Text(node.target_reply)
+    if node.instability_score is not None:
+        style = _score_style(1.0 - node.instability_score)
+        line.append(f"  [instability: {node.instability_score:.0%}]", style=style)
+    console.print(line)
+
+
 def render_transcript(
     console: Console, tree: ConversationTree, node_id: str, verdicts: list[Verdict]
 ) -> None:
@@ -117,14 +184,29 @@ def render_transcript(
             if node.tactic:
                 console.print(Text(f"tactic: {node.tactic}", style="dim italic"))
             _print_turn(console, probe.role, probe.content)
-        _print_turn(console, "assistant", node.target_reply)
+        _print_assistant_turn(console, node)
 
-    failing = [v for v in verdicts if v.node_id == node_id and not v.passed]
-    if not failing:
-        console.print(Panel("No rule violation at this node.", border_style="green"))
+    node_failures = [v for v in verdicts if v.node_id == node_id and not v.passed]
+    # Tool-scoped metric verdicts (Phase C) render as their own line, not as a
+    # generic rule panel — a tool-argument failure has no rule_id and would
+    # read as "rule: -" in the rule panel.
+    tool_failures = [v for v in node_failures if v.scope == "tool"]
+    rule_failures = [v for v in node_failures if v.scope != "tool"]
+
+    for verdict in tool_failures:
+        console.print(
+            Text(
+                f"tool arguments: {verdict.reason} (confidence {verdict.confidence:.0%})",
+                style=_SEVERITY_STYLE[verdict.severity],
+            )
+        )
+
+    if not rule_failures:
+        if not tool_failures:
+            console.print(Panel("No rule violation at this node.", border_style="green"))
         return
 
-    verdict = failing[0]
+    verdict = rule_failures[0]
     style = _SEVERITY_STYLE[verdict.severity]
     body = (
         f"rule: {verdict.rule_id or '-'}\n"
@@ -132,6 +214,76 @@ def render_transcript(
         f"reason: {verdict.reason}"
     )
     console.print(Panel(body, title=f"VERDICT - {verdict.severity.upper()}", border_style=style))
+
+
+def render_near_misses(console: Console, near_misses: list[NearMiss]) -> None:
+    """Phase C6: the closest calls — passing nodes that came nearest to
+    failing (Phase C5's ``graded_proximity``), reported alongside the
+    confirmed failures instead of buried in the tree."""
+    if not near_misses:
+        console.print(
+            Panel("No near-misses — nothing came close to failing.", border_style="green")
+        )
+        return
+    table = Table(title="Near Misses", show_lines=False)
+    table.add_column("Tactic", style="bold")
+    table.add_column("Proximity")
+    table.add_column("Node", overflow="fold")
+    bar_width = 20
+    for near_miss in near_misses:
+        filled = round(bar_width * near_miss.proximity)
+        proximity = Text(f"{near_miss.proximity:.0%} ")
+        proximity.append("#" * filled, style="yellow")
+        proximity.append("-" * (bar_width - filled), style="dim")
+        table.add_row(near_miss.tactic or "-", proximity, near_miss.node_id)
+    console.print(table)
+
+
+def _conversation_verdicts_by_leaf(verdicts: list[Verdict]) -> dict[str, list[Verdict]]:
+    """Group ``scope="conversation"`` verdicts by their leaf node id — see
+    ``Verdict.scope``'s docstring: that id is the persona chain's LEAF node,
+    since ``tree.path_to_root()`` of it reconstructs exactly the conversation
+    each group judged."""
+    grouped: dict[str, list[Verdict]] = {}
+    for verdict in verdicts:
+        if verdict.scope == "conversation":
+            grouped.setdefault(verdict.node_id, []).append(verdict)
+    return grouped
+
+
+def render_conversation_verdicts(
+    console: Console, tree: ConversationTree, verdicts: list[Verdict]
+) -> None:
+    """Phase C2/C6: whole-conversation metric verdicts (role adherence,
+    knowledge retention, ...), one table per persona chain — path-keyed by
+    its leaf node, distinct from any single turn's per-node rule verdict."""
+    grouped = _conversation_verdicts_by_leaf(verdicts)
+    if not grouped:
+        return
+    for leaf_id, leaf_verdicts in grouped.items():
+        path = tree.path_to_root(leaf_id)
+        tactic = path[-1].tactic if path else None
+        table = Table(
+            title=f"Conversation Verdicts — {tactic or leaf_id} ({len(path)} turns)",
+            show_lines=False,
+        )
+        table.add_column("Metric", style="bold")
+        table.add_column("Result", justify="center")
+        table.add_column("Severity", justify="center")
+        table.add_column("Reason", overflow="fold")
+        for verdict in leaf_verdicts:
+            result = (
+                Text("PASS", style="bold green")
+                if verdict.passed
+                else Text("FAIL", style="bold red")
+            )
+            table.add_row(
+                verdict.rule_id or "-",
+                result,
+                Text(verdict.severity, style=_SEVERITY_STYLE[verdict.severity]),
+                verdict.reason,
+            )
+        console.print(table)
 
 
 def render_full_report(
@@ -143,168 +295,22 @@ def render_full_report(
     tree: ConversationTree,
     verdicts: list[Verdict],
 ) -> None:
-    """The complete report: reliability, ranked clusters, one transcript per cluster."""
+    """The complete report: reliability, ranked clusters, conversation-level
+    verdicts, near misses, then one transcript per cluster."""
     render_reliability(console, run, reliability)
     render_clusters(console, clusters, verdicts)
+    render_conversation_verdicts(console, tree, verdicts)
+    render_near_misses(console, near_miss_ranking(tree.nodes(), verdicts))
     for cluster in clusters:
         if cluster.representative_node_id:
             render_transcript(console, tree, cluster.representative_node_id, verdicts)
-
-
-def render_replay(
-    console: Console, *, tree: ConversationTree, node_ids: list[str], verdicts: list[Verdict]
-) -> None:
-    """Every failing node's transcript, reproduced identically to the report."""
-    seen: set[str] = set()
-    if not node_ids:
-        console.print(Panel("No failing nodes to replay.", border_style="green"))
-        return
-    for node_id in node_ids:
-        if node_id in seen:
-            continue
-        seen.add(node_id)
-        render_transcript(console, tree, node_id, verdicts)
-
-
-def render_regression_report(
-    console: Console, *, cases: list[RegressionCase], results: list[RegressionResult]
-) -> None:
-    """A status table for every locked-in regression case's latest replay.
-
-    ``status="open"`` cases still failing is expected (a known, not-yet-fixed
-    issue); ``status="resolved"`` cases still (or again) failing is a genuine
-    regression, flagged in red.
-    """
-    if not cases:
-        console.print(Panel("No regression cases recorded for this agent.", border_style="green"))
-        return
-
-    results_by_case = {r.case_id: r for r in results}
-    table = Table(title="Regression Cases", show_lines=False)
-    table.add_column("Rule", style="bold")
-    table.add_column("Tactic")
-    table.add_column("Status", justify="center")
-    table.add_column("Still failing?", justify="center")
-    table.add_column("Reason", overflow="fold")
-
-    for case in cases:
-        result = results_by_case.get(case.id)
-        still_failing = result.still_failing if result is not None else None
-        if still_failing is None:
-            flag_text, flag_style = "?", "dim"
-        elif case.status == "resolved" and still_failing:
-            flag_text, flag_style = "yes (REGRESSION)", "bold red"
-        elif still_failing:
-            flag_text, flag_style = "yes", "yellow"
-        else:
-            flag_text, flag_style = "no", "green"
-        table.add_row(
-            case.rule_id,
-            case.tactic or "-",
-            case.status,
-            Text(flag_text, style=flag_style),
-            result.reason if result is not None else "-",
-        )
-    console.print(table)
-
-
-_SENTENCE_SEGMENTER = pysbd.Segmenter(language="en", clean=False)
-
-
-def _normalize_for_diff(text: str) -> list[str]:
-    """Split text into sentences for diffing, ignoring incidental line-wrap
-    width. A raw line-based diff is misleading here: the YAML's system_prompt
-    is hard-wrapped at a fixed column width, but an LLM's suggested
-    replacement rarely reproduces that exact wrap point — so a plain
-    ``str.splitlines()`` diff shows the whole paragraph as removed-and-re-added
-    even when only one sentence actually changed. Collapsing whitespace first
-    (so wrapping can't matter) and segmenting by sentence gives a diff that
-    tracks meaning, not incidental formatting. Mirrors
-    ``report/dashboard/server.py``'s identical helper.
-    """
-    collapsed = " ".join(text.split())
-    return [s.strip() for s in _SENTENCE_SEGMENTER.segment(collapsed) if s.strip()]
-
-
-def _render_diff(console: Console, old_text: str, new_text: str) -> None:
-    diff_lines = list(
-        difflib.unified_diff(
-            _normalize_for_diff(old_text),
-            _normalize_for_diff(new_text),
-            fromfile="current system_prompt",
-            tofile="suggested system_prompt",
-            lineterm="",
-        )
-    )
-    if not diff_lines:
-        console.print(Text("No textual difference proposed.", style="dim"))
-        return
-    for line in diff_lines:
-        if line.startswith("+") and not line.startswith("+++"):
-            console.print(Text(line, style="green"))
-        elif line.startswith("-") and not line.startswith("---"):
-            console.print(Text(line, style="red"))
-        elif line.startswith("@@"):
-            console.print(Text(line, style="cyan"))
-        else:
-            console.print(Text(line, style="dim"))
-
-
-def render_remediation_suggestion(
-    console: Console, *, rule: Rule, old_system_prompt: str, suggestion: RemediationSuggestion
-) -> None:
-    """The suggested system-prompt fix as a diff, plus rationale and confidence.
-
-    Presentation only — nothing here applies the suggestion; a human pastes
-    it into the AgentSpec YAML themselves if they agree with it.
-    """
-    body = (
-        f"rule: {rule.id} ({rule.severity})\n"
-        f"confidence: {suggestion.confidence:.0%}\n\n"
-        f"rationale: {suggestion.rationale}"
-    )
-    console.print(Panel(body, title="Suggested Fix", border_style="cyan"))
-    _render_diff(console, old_system_prompt, suggestion.suggested_system_prompt)
-
-
-def render_profile(console: Console, profile: StressProfile) -> None:
-    """A generated StressProfile: its personas and candidate rules, both
-    PROPOSED — presentation only. Nothing here applies a candidate rule to
-    the AgentSpec; a human reviews (and, in the dashboard, edits) this
-    before anything from it is used.
-    """
-    console.print(
-        Panel(
-            f"agent: {profile.agent_spec_name}\nprofile id: {profile.id}",
-            title="Stress Profile (proposed — not applied)",
-            border_style="cyan",
-        )
-    )
-
-    persona_table = Table(title="Personas", expand=True)
-    persona_table.add_column("name", style="bold")
-    persona_table.add_column("scenario")
-    persona_table.add_column("user description")
-    for persona in profile.personas:
-        persona_table.add_row(persona.name, persona.scenario, persona.user_description)
-    console.print(persona_table)
-
-    rule_table = Table(title="Candidate Rules", expand=True)
-    rule_table.add_column("id", style="bold")
-    rule_table.add_column("severity")
-    rule_table.add_column("text")
-    for rule in profile.candidate_rules:
-        rule_table.add_row(rule.id, Text(rule.severity, style=_SEVERITY_STYLE[rule.severity]), rule.text)
-    console.print(rule_table)
 
 
 __all__ = [
     "render_reliability",
     "render_clusters",
     "render_transcript",
+    "render_conversation_verdicts",
+    "render_near_misses",
     "render_full_report",
-    "render_replay",
-    "render_regression_report",
-    "render_remediation_suggestion",
-    "render_profile",
 ]

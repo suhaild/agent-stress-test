@@ -1,4 +1,4 @@
-{%- from "macros.html" import role_label, render_content, verdict_block -%}
+{%- from "macros.html" import role_label, render_content, verdict_block, tool_verdict, instability_badge -%}
 {% set path = tree.path_to_root(node_id) %}
 {% set root_node = path[0] %}
 {% set turns = path[1:] %}
@@ -21,8 +21,9 @@
   <div>{{ role_label(probe.role) }}
     {{ render_content(probe.content) }}</div>
   <p>{{ role_label('assistant') }}
-    <span class="text-[var(--ink-dim)]">{{ node.target_reply }}</span></p>
+    <span class="text-[var(--ink-dim)]">{{ node.target_reply }}</span>{{ instability_badge(node) }}</p>
   {{ render_tool_calls(node.tool_calls) }}
+  {% if node.tool_calls %}{{ tool_verdict(tree.verdicts(node.id)) }}{% endif %}
 {% endmacro %}
 <div class="panel p-5 space-y-2.5 text-sm" x-data="{ expanded: false }">
   {% for message in root_node.messages %}
@@ -32,8 +33,9 @@
   </div>
   {% endfor %}
   <p>{{ role_label('assistant') }}
-    <span class="text-[var(--ink-dim)]">{{ root_node.target_reply }}</span></p>
+    <span class="text-[var(--ink-dim)]">{{ root_node.target_reply }}</span>{{ instability_badge(root_node) }}</p>
   {{ render_tool_calls(root_node.tool_calls) }}
+  {% if root_node.tool_calls %}{{ tool_verdict(tree.verdicts(root_node.id)) }}{% endif %}
 
   {% for node in turns[:turns_visible] %}
     {{ render_turn(node) }}
@@ -49,6 +51,9 @@
           x-text="expanded ? 'Show fewer turns' : 'Show {{ turns | length - turns_visible }} more turns'"></button>
   {% endif %}
 
-  {% set failing = failures | selectattr("node_id", "equalto", node_id) | list %}
+  {# Tool-scoped verdicts render inline with their tool-call block above; the
+     verdict panel below is for rule/task verdicts only, so a failing tool
+     verdict is never mislabeled here as "rule: —". #}
+  {% set failing = failures | selectattr("node_id", "equalto", node_id) | rejectattr("scope", "equalto", "tool") | list %}
   {{ verdict_block(failing) }}
 </div>

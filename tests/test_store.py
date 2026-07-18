@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -15,7 +16,9 @@ from agent_stress_test.models import (
 )
 from agent_stress_test.orchestration.reliability import score_run
 from agent_stress_test.orchestration.runner import build_runner
+from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.providers.shaped_fake import ShapedFakeLLM
+from agent_stress_test.reasoning.judge import ToolArgumentJudge
 from agent_stress_test.store.sqlite_store import SqliteStore
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.tool_calling_verification_agent import (
@@ -272,6 +275,71 @@ def test_tool_calls_with_wrong_arguments_persist_structured_and_reload_via_load_
     # re-parse — and reflects the agent's genuinely wrong argument.
     assert isinstance(call.input_parameters, dict)
     assert "order_id" in call.input_parameters
+
+
+# --- Tool-argument metric failure persists (C1) ----------------------------
+
+
+def test_wrong_argument_tool_call_from_a4_persists_as_a_detectable_tool_verdict(tmp_path):
+    # The C1 mandatory test: a wrong-argument tool call from the A4 target
+    # produces a persisted, detectable failure verdict. The metric's two model
+    # calls (per-tool verdicts, then reason) are scripted so the assertion is
+    # deterministic and offline.
+    db = tmp_path / "runs.sqlite"
+    query = [Message(role="user", content="Where is order 12345?")]
+    response = tool_calling_verification_agent(query)
+    provider = FakeLLMProvider(
+        responses=[
+            json.dumps({"verdicts": [{"verdict": "no", "reason": "wrong order_id"}]}),
+            json.dumps({"reason": "lookup_order used the wrong order_id."}),
+        ]
+    )
+    [verdict] = ToolArgumentJudge(provider).judge(
+        response, run_id="run-1", node_id="node-1", conversation=query
+    )
+
+    with SqliteStore(db) as store:
+        store.save_verdict(verdict)
+
+    with SqliteStore(db) as reloaded:
+        [reloaded_verdict] = reloaded.get_verdicts("run-1")
+
+    assert reloaded_verdict == verdict  # scope="tool" round-trips faithfully
+    assert reloaded_verdict.scope == "tool"
+    assert reloaded_verdict.passed is False
+    assert reloaded_verdict.rule_id is None
+
+
+def test_a_scopeless_verdict_row_reloads_as_a_rule_verdict(tmp_path):
+    # A pre-C verdict row (persisted before `scope` existed) has no "scope"
+    # key; reloading must default it to "rule", never crash — the additive
+    # change stays migration-safe.
+    db = tmp_path / "runs.sqlite"
+    legacy_json = json.dumps(
+        {
+            "id": "v1",
+            "run_id": "run-1",
+            "node_id": "node-1",
+            "passed": False,
+            "rule_id": "no-self-refund",
+            "reason": "self-refunded",
+            "tier": "rules",
+            "confidence": 1.0,
+            "severity": "critical",
+            # no "scope" key — the pre-C shape
+        }
+    )
+    with SqliteStore(db) as store:
+        store._conn.execute(
+            "INSERT INTO verdicts (id, run_id, data) VALUES (?, ?, ?)",
+            ("v1", "run-1", legacy_json),
+        )
+        store._conn.commit()
+
+    with SqliteStore(db) as reloaded:
+        [verdict] = reloaded.get_verdicts("run-1")
+
+    assert verdict.scope == "rule"
 
 
 # --- Layer boundary: SQLite must not leak outside store/ -----------------

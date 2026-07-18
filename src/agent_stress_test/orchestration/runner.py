@@ -20,7 +20,14 @@ from agent_stress_test.orchestration.search import SearchStrategy
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import LLMProvider, Store, TargetAgent
 from agent_stress_test.reasoning.consistency import ConsistencyScorer
-from agent_stress_test.reasoning.judge import Judge, build_two_tier_judge
+from agent_stress_test.reasoning.judge import (
+    CompositeJudge,
+    Judge,
+    TaskCompletionJudge,
+    ToolArgumentJudge,
+    build_conversation_judge,
+    build_two_tier_judge,
+)
 from agent_stress_test.reasoning.profiler import to_conversational_golden
 
 _DEFAULT_SEED: list[Message] = [
@@ -143,6 +150,9 @@ def build_runner(
     store: Store | None = None,
     tactics: list[str] | None = None,
     sample_n: int = 3,
+    argument_correctness: bool = True,
+    task_completion: bool = False,
+    conversation_metrics: bool = False,
 ) -> Runner:
     """Wire the workers into a ready-to-run Runner (the composition root).
 
@@ -183,10 +193,63 @@ def build_runner(
     them into ``agent_spec.rules`` by hand). ``tactics``, when given
     explicitly, may name either a bundled tactic or one of this profile's
     own persona names.
+
+    The Phase-C node-level metrics layer on top of the rule judge (as extra,
+    independent verdict axes — see ``CompositeJudge``): ``argument_correctness``
+    (DeepEval's ``ArgumentCorrectnessMetric``) is on by default because it
+    costs nothing on nodes without tool calls and only does real work when
+    there's a tool call to judge; ``task_completion`` (``TaskCompletionMetric``)
+    is off by default because it costs 2 LLM calls per node regardless of
+    tool use. Both attach to whichever judge is in use (the default two-tier
+    judge or an explicitly-passed ``judge``).
+
+    ``conversation_metrics`` (Phase C2) wires ``build_conversation_judge`` —
+    RoleAdherence/KnowledgeRetention/ConversationCompleteness/TurnRelevancy
+    plus a per-rule conversational GEval, scored once per persona's WHOLE
+    conversation rather than per node. Off by default: every one of those
+    metrics costs its own LLM call(s) per persona, on top of the per-node
+    judge already running on every turn.
+
+    Phase C3 measured these real per-metric costs (``scripts/
+    measure_metric_costs.py``, claude-haiku-4-5, one real live run over a
+    short 4-turn support conversation with one tool call, after fixing a
+    real bug the very same measurement run surfaced — see
+    ``reasoning/deepeval_bridge.py``'s fence-stripping fix):
+
+        metric                      calls  tokens   cost
+        tool_argument_correctness     2     1490   $0.0021
+        task_completion                2     1428   $0.0022
+        role_adherence                 2     1763   $0.0023
+        knowledge_retention             5     3811   $0.0052
+        conversation_completeness      5     3349   $0.0042
+        turn_relevancy                  3     1972   $0.0024
+        conversation_rule_geval (x4)    4     2713   $0.0046
+        TOTAL (one full pass)          23    16526   $0.0230
+
+    None of these are individually "wildly expensive" on Haiku (a couple of
+    cents for the whole stack over one conversation) — but the two defaults
+    above are still correct, now backed by evidence instead of a guess:
+    ``task_completion`` fires on EVERY node regardless of content (the only
+    per-node metric here with no cheap early-out, unlike
+    ``argument_correctness``, which skips nodes with no tool calls), so its
+    cost compounds with node count across a run. ``conversation_metrics``
+    is ~19 calls (~$0.02) PER PERSONA — with the bundled 5-tactic registry
+    alone that's ~95 extra calls layered on top of the per-node judge
+    already running every turn. Both stay opt-in.
     """
     resolved_judge = judge if judge is not None else build_two_tier_judge(agent_spec, sim_provider)
+    metric_judges: list[Judge] = []
+    if argument_correctness:
+        metric_judges.append(ToolArgumentJudge(sim_provider))
+    if task_completion:
+        metric_judges.append(TaskCompletionJudge(sim_provider))
+    if metric_judges:
+        resolved_judge = CompositeJudge([resolved_judge, *metric_judges])
     scorer = ConsistencyScorer(target) if sample_n >= 2 else None
     extra_personas = _profile_extra_personas(store, agent_spec.name)
+    conversation_judge = (
+        build_conversation_judge(sim_provider, agent_spec) if conversation_metrics else None
+    )
     strategy = DeepEvalConversationSearch(
         target,
         sim_provider,
@@ -195,5 +258,6 @@ def build_runner(
         tactics=tactics,
         sample_n=sample_n,
         extra_personas=extra_personas,
+        conversation_judge=conversation_judge,
     )
     return Runner(agent_spec, strategy, store, sim_provider=sim_provider, llm=llm)

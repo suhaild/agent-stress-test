@@ -11,6 +11,11 @@ per node. Each persona is its own root-to-leaf branch: DeepEval's
 ``ConversationSimulator`` always starts a conversation fresh from its own
 persona's opening line, so — unlike the old strategy — there's no single
 shared root turn for personas to branch off of.
+
+Optionally (Phase C2), an injected ``ConversationJudge`` also scores each
+persona's WHOLE chain once it's fully ingested — a path-level judgment
+alongside the per-node one — with its verdicts attached to the chain's leaf
+node (see ``_ingest``).
 """
 
 from agent_stress_test.models import AgentResponse, Message, Node, Verdict
@@ -23,7 +28,7 @@ from agent_stress_test.reasoning.deepeval_simulator import (
     from_deepeval_tool_call,
     simulate_personas,
 )
-from agent_stress_test.reasoning.judge import Judge
+from agent_stress_test.reasoning.judge import ConversationJudge, Judge
 
 
 class DeepEvalConversationSearch(SearchStrategy):
@@ -49,6 +54,7 @@ class DeepEvalConversationSearch(SearchStrategy):
         tactics: list[str] | None = None,
         sample_n: int = 3,
         extra_personas: dict[str, object] | None = None,
+        conversation_judge: ConversationJudge | None = None,
     ) -> None:
         """``extra_personas`` merges in additional name -> ConversationalGolden
         entries beyond the bundled ``PERSONAS`` dict (e.g. an agent's own
@@ -59,6 +65,12 @@ class DeepEvalConversationSearch(SearchStrategy):
         never needs to import ``deepeval`` itself — it only ever holds these
         values opaquely and hands them to ``simulate_personas``, exactly like
         it already does with the imported ``PERSONAS`` dict.
+
+        ``conversation_judge`` (Phase C2), when given, scores each persona's
+        WHOLE conversation once it's fully ingested — a different unit of
+        judgment than ``judge``, which scores each node/turn as it's created.
+        Its verdicts attach to the conversation's leaf node (see ``_ingest``).
+        Left ``None`` (the default), no conversation-level judging happens.
         """
         self._target = target
         self._sim_provider = sim_provider
@@ -67,6 +79,7 @@ class DeepEvalConversationSearch(SearchStrategy):
         self._extra_personas = dict(extra_personas) if extra_personas else {}
         self._personas = tactics if tactics is not None else [*PERSONAS, *self._extra_personas]
         self._sample_n = sample_n
+        self._conversation_judge = conversation_judge
 
     def search(
         self, tree: ConversationTree, seed_messages: list[Message], *, budget: int
@@ -74,15 +87,17 @@ class DeepEvalConversationSearch(SearchStrategy):
         failures: list[Verdict] = []
         nodes_created = 0
 
+        personas_map = {**PERSONAS, **self._extra_personas}
         test_cases = simulate_personas(
             target=self._target,
             sim_provider=self._sim_provider,
             persona_names=self._personas,
             max_user_simulations=budget,
-            personas={**PERSONAS, **self._extra_personas},
+            personas=personas_map,
         )
         for persona_name, test_case in zip(self._personas, test_cases):
-            nodes_created += self._ingest(tree, persona_name, test_case.turns, failures)
+            golden = personas_map.get(persona_name)
+            nodes_created += self._ingest(tree, persona_name, test_case.turns, failures, golden)
 
         return SearchResult(
             expansions=len(self._personas), nodes_created=nodes_created, failures=failures
@@ -94,9 +109,13 @@ class DeepEvalConversationSearch(SearchStrategy):
         tactic: str,
         turns,
         failures: list[Verdict],
+        golden: object | None = None,
     ) -> int:
         """Convert one persona's flat, alternating user/assistant Turn list
-        into a linear chain of judged Nodes committed onto the tree."""
+        into a linear chain of judged Nodes committed onto the tree, then (if
+        a conversation-level judge is wired) judge the WHOLE chain once and
+        attach those verdicts to its leaf node — the chain's last node, whose
+        ``tree.path_to_root()`` reconstructs exactly the conversation judged."""
         conversation: list[Message] = []
         parent_id: str | None = None
         created = 0
@@ -121,12 +140,25 @@ class DeepEvalConversationSearch(SearchStrategy):
                 node.instability_score = 0.0
 
             response = AgentResponse(final_reply=turn.content, tool_calls=tool_calls)
-            verdicts = self._judge.judge(response, run_id=tree.run_id, node_id=node.id)
+            verdicts = self._judge.judge(
+                response, run_id=tree.run_id, node_id=node.id, conversation=node.messages
+            )
 
             tree.add(node)
             tree.attach_verdicts(node.id, verdicts)
             failures.extend(v for v in verdicts if not v.passed)
             parent_id = node.id
             created += 1
+
+        if self._conversation_judge is not None and parent_id is not None:
+            conversation_verdicts = self._conversation_judge.judge_conversation(
+                conversation,
+                run_id=tree.run_id,
+                node_id=parent_id,
+                scenario=getattr(golden, "scenario", None),
+                user_description=getattr(golden, "user_description", None),
+            )
+            tree.attach_verdicts(parent_id, conversation_verdicts)
+            failures.extend(v for v in conversation_verdicts if not v.passed)
 
         return created

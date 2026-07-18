@@ -21,6 +21,11 @@ dependencies = [
     "python-multipart",
     "pysbd",
     "deepeval>=4.1.1",
+    # Runs the vendored agent-toolkit real-world target agent in-process
+    # (src/agent_stress_test/targets/agent_toolkit_target.py). Not used by
+    # this codebase's own core.
+    "anthropic",
+    "pydantic-settings",
 ]
 
 [project.optional-dependencies]

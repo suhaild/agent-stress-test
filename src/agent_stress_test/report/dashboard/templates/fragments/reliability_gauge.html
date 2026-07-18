@@ -1,4 +1,16 @@
-{% if reliability %}
+{% from "macros.html" import severity_tag %}
+{% macro model_select() %}
+{% if run_id %}
+<select name="model" class="field-input font-mono text-[.68rem]" style="width: auto; padding: .3rem .5rem;"
+        hx-get="/runs/{{ run_id }}/reliability" hx-trigger="change"
+        hx-target="#reliability-gauge" hx-swap="innerHTML">
+  <option value="severity_weighted" {% if reliability.model_name == 'severity_weighted' %}selected{% endif %}>severity_weighted</option>
+  <option value="unweighted" {% if reliability.model_name == 'unweighted' %}selected{% endif %}>unweighted</option>
+  <option value="task_success" {% if reliability.model_name == 'task_success' %}selected{% endif %}>task_success</option>
+</select>
+{% endif %}
+{% endmacro %}
+{% if reliability and reliability.applicable %}
 {% set pct = reliability.score * 100 %}
 {% set pct_rounded = pct | round(0, 'floor') | int %}
 {% set dial_color = 'var(--pass)' if reliability.score >= 0.7 else ('var(--warn)' if reliability.score >= 0.4 else 'var(--fail)') %}
@@ -17,7 +29,7 @@
       });
     })();
   </script>
-  <div class="flex-1 text-sm text-[var(--ink-dim)] space-y-1.5">
+  <div class="flex-1 text-sm text-[var(--ink-dim)] space-y-2">
     <p>
       <span class="text-[var(--ink)] font-mono">{{ reliability.failing_steps }} / {{ reliability.total_steps }}</span>
       steps failed
@@ -26,6 +38,44 @@
       {{ "%.0f"|format(reliability.per_step_failure_rate * 100) }}% per-step failure rate,
       compounded over ~{{ "%.1f"|format(reliability.conversation_depth) }} turns
     </p>
+    {% if reliability.failing_steps %}
+    <div class="flex flex-wrap items-center gap-1.5 pt-0.5">
+      {% for severity, count in reliability.severity_breakdown.items() %}
+      {% if count %}{{ severity_tag(severity, indent='') }}<span class="font-mono text-[.7rem] text-[var(--ink-faint)] -ml-1">&times;{{ count }}</span>{% endif %}
+      {% endfor %}
+    </div>
+    {% set total = reliability.severity_breakdown.values() | sum %}
+    {% set ns = namespace(x=0) %}
+    <svg width="100%" height="8" viewBox="0 0 100 8" preserveAspectRatio="none" class="mt-0.5" role="img" aria-label="severity mix">
+      {% for severity, count in reliability.severity_breakdown.items() %}
+      {% if count %}
+      {% set w = count / total * 100 %}
+      <rect x="{{ ns.x }}" y="0" width="{{ w }}" height="8" style="fill: {% if severity == 'critical' %}var(--fail){% elif severity == 'major' %}var(--warn){% else %}var(--pass){% endif %};"></rect>
+      {% set ns.x = ns.x + w %}
+      {% endif %}
+      {% endfor %}
+    </svg>
+    {% endif %}
+    <div class="flex items-center justify-between gap-2 pt-1">
+      <p class="tag-label">model: {{ reliability.model_name }}</p>
+      {{ model_select() }}
+    </div>
+  </div>
+</div>
+{% elif reliability %}
+<div class="panel p-6 flex items-center gap-4">
+  <div class="dial" style="--dial-color: var(--wire); --pct: 0;">
+    <div class="dial-face">
+      <span class="dial-value text-[var(--ink-faint)]">&mdash;</span>
+      <span class="dial-caption">Reliability</span>
+    </div>
+  </div>
+  <div class="flex-1 text-sm text-[var(--ink-dim)] space-y-1.5">
+    <p>Not measured &mdash; the <span class="text-[var(--ink)] font-mono">{{ reliability.model_name }}</span> model has no relevant verdicts on this run.</p>
+    <div class="flex items-center justify-between gap-2">
+      <p class="tag-label">model: {{ reliability.model_name }}</p>
+      {{ model_select() }}
+    </div>
   </div>
 </div>
 {% else %}

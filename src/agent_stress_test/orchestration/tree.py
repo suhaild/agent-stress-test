@@ -55,18 +55,27 @@ class ConversationTree:
     def attach_verdicts(self, node_id: str, verdicts: list[Verdict]) -> None:
         """Record the verdicts a judge produced for a node (a blackboard write).
 
-        Also points ``node.verdict_id`` at the first failing verdict, if any, so
-        a failing node carries a direct handle to its failure. This is a plain
-        attribute assignment on an already-defined, nullable field — no model
-        change.
+        Accumulates rather than replaces: a node is normally judged once, but
+        a conversation-level judge (Phase C2) attaches its verdicts to a
+        conversation's LEAF node in a *second* call, after that node's own
+        per-turn verdicts are already recorded (see
+        ``DeepEvalConversationSearch._ingest``) — accumulating means that
+        second call adds to the leaf's verdicts instead of wiping them out.
+
+        Also points ``node.verdict_id`` at the first failing verdict the node
+        ever received, if any, so a failing node carries a direct handle to
+        its failure — only set once (a later call with no failures of its own
+        leaves an earlier pointer alone; this is a plain attribute assignment
+        on an already-defined, nullable field, no model change).
         """
         with self._lock:
             if node_id not in self._nodes:
                 raise KeyError(f"Unknown node {node_id}.")
-            self._verdicts[node_id] = list(verdicts)
-            failing = [v for v in verdicts if not v.passed]
-            if failing:
-                self._nodes[node_id].verdict_id = failing[0].id
+            self._verdicts.setdefault(node_id, []).extend(verdicts)
+            if self._nodes[node_id].verdict_id is None:
+                failing = [v for v in verdicts if not v.passed]
+                if failing:
+                    self._nodes[node_id].verdict_id = failing[0].id
 
     def get(self, node_id: str) -> Node:
         with self._lock:

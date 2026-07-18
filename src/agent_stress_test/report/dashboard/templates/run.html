@@ -37,6 +37,17 @@
 
   <div id="suggestion-panel" class="mb-10"></div>
 
+  <div id="conversation-verdicts-section" sse-swap="conversation-verdicts" hx-swap="innerHTML">
+    {% include "fragments/conversation_verdicts_section.html" %}
+  </div>
+
+  <section class="mb-10 reveal" style="animation-delay: 150ms">
+    <h2 class="tag-label mb-4">Near Misses</h2>
+    <div id="near-miss-panel" sse-swap="near-misses" hx-swap="innerHTML">
+      {% include "fragments/near_miss_panel.html" %}
+    </div>
+  </section>
+
   <div id="transcripts-section" sse-swap="transcripts" hx-swap="innerHTML">
     {% include "fragments/transcripts_section.html" %}
   </div>

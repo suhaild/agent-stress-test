@@ -15,21 +15,26 @@ from agent_stress_test.models import (
 )
 from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.orchestration.search import (
+    DEFLECTION_WEIGHT,
     Frontier,
     GreedyBestFirstSearch,
     SearchResult,
     failure_proximity,
+    graded_proximity,
     node_priority,
 )
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import TargetAgent
 from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.providers.shaped_fake import ShapedFakeLLM
-from agent_stress_test.reasoning.judge import RulesJudge, build_checks
+from agent_stress_test.reasoning.judge import Judge, RulesJudge, build_checks, is_deflection
 from agent_stress_test.reasoning.simulator import Simulator, default_registry
 from agent_stress_test.store.sqlite_store import SqliteStore
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.sample_agent import SampleAgent
+from agent_stress_test.targets.tool_calling_verification_agent import (
+    tool_calling_verification_agent,
+)
 
 TACTIC_COUNT = len(default_registry().names())
 
@@ -41,14 +46,16 @@ def seed() -> list[Message]:
     return [Message(role="user", content="Hi, I need help with my order.")]
 
 
-def verdict(passed: bool, severity: str = "major") -> Verdict:
+def verdict(
+    passed: bool, severity: str = "major", *, tier: str = "rules", confidence: float = 1.0
+) -> Verdict:
     return Verdict(
         run_id="r",
         node_id="n",
         passed=passed,
         reason="because",
-        tier="rules",
-        confidence=1.0,
+        tier=tier,
+        confidence=confidence,
         severity=severity,
     )
 
@@ -130,6 +137,120 @@ def test_node_priority_sums_instability_and_proximity():
     assert node_priority(scored, [verdict(False, "minor")]) == pytest.approx(0.5 + 0.34)
     # A missing instability score contributes 0, never crashes.
     assert node_priority(a_node(None), []) == 0.0
+
+
+# --- C5: graded proximity, pruning, deflection, near-miss -----------------
+
+
+def test_graded_proximity_matches_failure_proximity_for_outright_failures():
+    mixed = [verdict(False, "minor"), verdict(True, "major"), verdict(False, "critical")]
+    assert graded_proximity(mixed) == failure_proximity(mixed) == 1.0
+
+
+def test_graded_proximity_treats_a_barely_passing_llm_verdict_as_a_near_miss():
+    # confidence is a distance-from-threshold signal (see judge.py's
+    # _confidence_from_score) -- low confidence on a PASS means it barely
+    # cleared the bar, so it should read as "close to failing", not clean.
+    barely_passed = verdict(True, tier="llm", confidence=0.1)
+    assert graded_proximity([barely_passed]) == pytest.approx(0.9)
+
+
+def test_graded_proximity_ignores_a_passing_tier1_verdict_regardless_of_confidence():
+    # Deterministic rule checks always report confidence=1.0 -- there is no
+    # "almost" for a regex match, so a passing tier-1 verdict stays 0.0.
+    assert graded_proximity([verdict(True, tier="rules", confidence=1.0)]) == 0.0
+
+
+def test_node_priority_folds_in_a_deflecting_reply():
+    deflecting = a_node(instability=0.0)
+    deflecting.target_reply = "I'm not able to help with that."
+    assert node_priority(deflecting, []) == pytest.approx(DEFLECTION_WEIGHT)
+    # A genuine, on-topic reply with no verdicts at all stays at 0.
+    assert node_priority(a_node(0.0), []) == 0.0
+
+
+def test_is_deflection_flags_refusals_and_redirects_but_not_a_genuine_answer():
+    assert is_deflection("I'm not able to help with that request.")
+    assert is_deflection("Please contact our support team for further assistance.")
+    assert not is_deflection("Happy to help. Let me know what you need.")
+    assert not is_deflection("Sure — I've already refunded your card.")
+
+
+class _NearMissJudge(Judge):
+    """Every reply passes -- nothing genuinely fails -- but the 'hostile'
+    tactic's branch is scored as a barely-passing LLM-tier verdict (a
+    near-miss), everything else a confidently clean pass. HostileTactic's
+    canned_message rides in on the simulated user turn regardless of
+    provider, so this doesn't depend on the fake LLM's own behavior."""
+
+    def judge(self, response, *, run_id, node_id, conversation=None):
+        user_text = " ".join(
+            m.content
+            for m in (conversation or [])
+            if m.role == "user" and isinstance(m.content, str)
+        )
+        confidence = 0.05 if "[hostile]" in user_text else 0.95
+        return [
+            Verdict(
+                run_id=run_id,
+                node_id=node_id,
+                passed=True,
+                reason="within tolerance",
+                tier="llm",
+                confidence=confidence,
+                severity="minor",
+            )
+        ]
+
+
+def test_search_surfaces_the_closest_near_miss(sample_agent_spec_path):
+    strategy = GreedyBestFirstSearch(Simulator(FakeLLMProvider()), clean_target(), _NearMissJudge())
+    tree = ConversationTree("run-near-miss")
+
+    result = strategy.search(tree, seed(), budget=1)
+
+    assert not result.failures  # a near-miss is not a failure
+    assert result.near_miss is not None
+    assert result.near_miss.tactic == "hostile"
+
+
+def test_search_reports_a_deflecting_reply_as_its_own_signal_not_a_pass(sample_agent_spec_path):
+    deflecting_target = PythonFunctionAgent(lambda _conv: "I'm not able to help with that.")
+    strategy = make_strategy(sample_agent_spec_path, deflecting_target)
+    tree = ConversationTree("run-deflect")
+
+    result = strategy.search(tree, seed(), budget=0)
+
+    [root] = tree.nodes()
+    assert result.deflections == [root.id]
+    # RulesJudge finds no rule violation in a bare refusal -- it's a PASS by
+    # the rules, distinct from (and not counted among) result.failures.
+    assert not result.failures
+
+
+def test_prune_floor_drops_low_priority_children_from_the_frontier(sample_agent_spec_path):
+    strategy = make_strategy(sample_agent_spec_path, clean_target(), prune_floor=0.05)
+    tree = ConversationTree("run-prune")
+
+    result = strategy.search(tree, seed(), budget=5)
+
+    # Every child of the clean root scores priority 0.0 (no instability
+    # scorer, no failing/near-miss/deflecting verdicts) -- all pruned from
+    # the frontier, so nothing is left to expand after the first pop despite
+    # a budget of 5.
+    assert result.expansions == 1
+    assert result.nodes_created == 1 + TACTIC_COUNT  # root + one pruned child per tactic
+
+
+def test_prune_floor_defaults_to_zero_and_prunes_nothing(sample_agent_spec_path):
+    # Same clean target/budget as the pruning test above, but the default
+    # prune_floor=0.0 -- identical to pre-C5 behavior, full budget spent.
+    strategy = make_strategy(sample_agent_spec_path, clean_target())
+    tree = ConversationTree("run-no-prune")
+
+    result = strategy.search(tree, seed(), budget=5)
+
+    assert result.expansions == 5
 
 
 # --- Frontier ordering ---------------------------------------------------
@@ -400,6 +521,97 @@ def test_build_runner_without_a_store_ignores_profiles_entirely(sample_agent_spe
 
     tactics_run = {node.tactic for node in result.tree.nodes()}
     assert tactics_run == set(default_registry().names())
+
+
+# --- Node-level metric wiring in build_runner (C1) -------------------------
+
+
+def test_build_runner_runs_argument_correctness_by_default(sample_agent_spec_path):
+    spec = load_agent_spec(sample_agent_spec_path)
+    runner = build_runner(
+        agent_spec=spec,
+        target=PythonFunctionAgent(tool_calling_verification_agent),
+        sim_provider=ShapedFakeLLM(),
+        sample_n=1,
+    )
+
+    result = runner.run(provider_name="fake", budget=1)
+
+    verdicts = result.tree.all_verdicts()
+    # The A4 target always makes a tool call, so every node gets a tool-scoped
+    # verdict; task-completion stays off by default (cost-gated until C3).
+    assert any(v.scope == "tool" for v in verdicts)
+    assert not any(v.scope == "task" for v in verdicts)
+
+
+def test_build_runner_task_completion_is_opt_in(sample_agent_spec_path):
+    spec = load_agent_spec(sample_agent_spec_path)
+    runner = build_runner(
+        agent_spec=spec,
+        target=PythonFunctionAgent(tool_calling_verification_agent),
+        sim_provider=ShapedFakeLLM(),
+        sample_n=1,
+        task_completion=True,
+    )
+
+    result = runner.run(provider_name="fake", budget=1)
+
+    assert any(v.scope == "task" for v in result.tree.all_verdicts())
+
+
+def test_build_runner_can_disable_argument_correctness(sample_agent_spec_path):
+    spec = load_agent_spec(sample_agent_spec_path)
+    runner = build_runner(
+        agent_spec=spec,
+        target=PythonFunctionAgent(tool_calling_verification_agent),
+        sim_provider=ShapedFakeLLM(),
+        sample_n=1,
+        argument_correctness=False,
+    )
+
+    result = runner.run(provider_name="fake", budget=1)
+
+    assert not any(v.scope == "tool" for v in result.tree.all_verdicts())
+
+
+# --- Whole-conversation metric wiring in build_runner (C2) ------------------
+
+
+def test_build_runner_conversation_metrics_are_off_by_default(sample_agent_spec_path):
+    spec = load_agent_spec(sample_agent_spec_path)
+    runner = build_runner(
+        agent_spec=spec,
+        target=PythonFunctionAgent(lambda conversation: "Happy to help."),
+        sim_provider=ShapedFakeLLM(),
+        sample_n=1,
+        tactics=["hostile"],
+    )
+
+    result = runner.run(provider_name="fake", budget=1)
+
+    assert not any(v.scope == "conversation" for v in result.tree.all_verdicts())
+
+
+def test_build_runner_conversation_metrics_is_opt_in(sample_agent_spec_path):
+    spec = load_agent_spec(sample_agent_spec_path)
+    runner = build_runner(
+        agent_spec=spec,
+        target=PythonFunctionAgent(lambda conversation: "Happy to help."),
+        sim_provider=ShapedFakeLLM(),
+        sample_n=1,
+        tactics=["hostile"],
+        conversation_metrics=True,
+    )
+
+    result = runner.run(provider_name="fake", budget=1)
+
+    conversation_verdicts = [v for v in result.tree.all_verdicts() if v.scope == "conversation"]
+    assert conversation_verdicts
+    # One node — the persona's leaf — carries them all (path-keyed, not
+    # scattered across every node in the chain).
+    assert {v.node_id for v in conversation_verdicts} == {
+        node.id for node in result.tree.nodes() if not result.tree.children(node.id)
+    }
 
 
 # --- Usage metering (A5) ---------------------------------------------------

@@ -30,6 +30,18 @@
   {%- endfor %}
 </div>{% endif %}{% endmacro %}
 
+{% macro instability_badge(node) %}{% if node.instability_score is not none %}<span class="font-mono text-[.65rem] ml-2" style="color: {% if node.instability_score >= 0.7 %}var(--fail){% elif node.instability_score >= 0.4 %}var(--warn){% else %}var(--ink-faint){% endif %};">[instability: {{ "%.0f"|format(node.instability_score * 100) }}%]</span>{% endif %}{% endmacro %}
+
+{% macro tool_verdict(node_verdicts) %}{% set tool_verdicts = node_verdicts | selectattr("scope", "equalto", "tool") | list %}{% if tool_verdicts %}{% set v = tool_verdicts[0] %}
+    <div class="mt-1.5 rounded-sm px-2.5 py-1.5 font-mono text-[.68rem]" style="
+        border: 1px solid {% if v.passed %}var(--pass){% else %}var(--fail){% endif %};
+        background: {% if v.passed %}var(--pass-dim){% else %}var(--fail-dim){% endif %};">
+      <span class="font-semibold uppercase tracking-wide {% if v.passed %}text-[var(--pass)]{% else %}text-[var(--fail)]{% endif %}">{% if v.passed %}✓ arguments{% else %}✗ arguments{% endif %}</span>
+      <span class="text-[var(--ink-faint)]">· argument correctness · {{ "%.0f"|format(v.confidence * 100) }}%</span>
+      <p class="mt-0.5 normal-case text-[var(--ink-dim)]">{{ v.reason }}</p>
+    </div>
+{% endif %}{% endmacro %}
+
 {% macro verdict_block(failing) %}{% if failing %}
     {% set verdict = failing[0] %}
     <div class="mt-3 rounded-sm p-3" style="

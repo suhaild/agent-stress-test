@@ -18,6 +18,7 @@ actually acts on this marker instead of ignoring it.
 
 import asyncio
 import json
+import re
 
 from deepeval.models.base_model import DeepEvalBaseLLM
 from pydantic import BaseModel
@@ -28,6 +29,24 @@ from agent_stress_test.ports import LLMProvider
 SCHEMA_MARKER = (
     "\n\n=== RESPONSE_SCHEMA (JSON Schema — respond with ONLY a JSON object matching it) ===\n"
 )
+
+# Real models routinely wrap their JSON output in a markdown code fence even
+# when told to respond with ONLY the JSON object (Claude does this reliably,
+# confirmed against a live model — see reasoning/remediation.py's identical
+# helper) — model_validate_json() can't parse the fence's backticks, so it's
+# stripped before validation rather than treated as a parse failure. EVERY
+# schema-constrained DeepEval call (tier-2 GEval and all of Phase C's metric
+# judges) funnels through this one shim, so this is the single place that
+# needs to handle it — confirmed live: without this, a real Claude call's
+# fenced response raised pydantic's ValidationError here, which every caller
+# catches as "malformed output, default to a conservative pass" (see
+# judge.py), silently skipping real judgment on every live call.
+_JSON_FENCE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
+
+
+def _strip_json_fence(raw: str) -> str:
+    match = _JSON_FENCE.match(raw.strip())
+    return match.group(1).strip() if match else raw
 
 
 class LLMProviderAsDeepEvalLLM(DeepEvalBaseLLM):
@@ -46,7 +65,7 @@ class LLMProviderAsDeepEvalLLM(DeepEvalBaseLLM):
             full_prompt = f"{prompt}{SCHEMA_MARKER}{json.dumps(schema.model_json_schema())}"
         text = self._provider.complete([Message(role="user", content=full_prompt)])
         if schema is not None:
-            return schema.model_validate_json(text)
+            return schema.model_validate_json(_strip_json_fence(text))
         return text
 
     async def a_generate(self, prompt: str, schema: type[BaseModel] | None = None):

@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 import pytest
+from rich.console import Console
 
 from agent_stress_test.config import load_agent_spec
 from agent_stress_test.models import Run, Verdict
@@ -114,18 +115,44 @@ def test_migrate_is_idempotent(tmp_path, sample_agent_spec_path):
     assert backups_after_first == backups_after_second
 
 
-def test_report_and_replay_work_on_a_migrated_db(tmp_path, sample_agent_spec_path, capsys):
-    from agent_stress_test.cli import main
+def test_a_migrated_db_loads_and_renders_correctly(tmp_path, sample_agent_spec_path):
+    """Not just "do the raw rows parse" (see
+    test_migrate_upgrades_v1_rows_with_no_data_loss above) but "does the real
+    report-rendering pipeline (tree reconstruction + Rich rendering) work on
+    a migrated run" — exercised directly through composition.py/terminal.py
+    rather than through the CLI, since which CLI subcommands exist is
+    unrelated to whether a migration actually preserved usable data (the
+    dashboard is the real front end for viewing a run; see cli.py's
+    module docstring)."""
+    from agent_stress_test.composition import _load_bundle
+    from agent_stress_test.orchestration.reliability import score_run
+    from agent_stress_test.report.terminal import render_full_report, render_transcript
 
     db_path = tmp_path / "runs.sqlite"
-    run_id, _node_id = _seed_v1_shaped_db(db_path, sample_agent_spec_path)
+    run_id, node_id = _seed_v1_shaped_db(db_path, sample_agent_spec_path)
     migrate(db_path)
 
-    report_exit = main(["report", run_id, "--db", str(db_path)])
-    assert report_exit == 0
+    with SqliteStore(str(db_path)) as store:
+        run, tree, verdicts, clusters = _load_bundle(store, run_id)
 
-    replay_exit = main(["replay", run_id, "--db", str(db_path)])
-    assert replay_exit == 0
+    console = Console(record=True, width=120, force_terminal=False)
+    render_full_report(
+        console,
+        run=run,
+        reliability=score_run(tree.nodes(), verdicts),
+        clusters=clusters,
+        tree=tree,
+        verdicts=verdicts,
+    )
+    # This seeded db has no Cluster, so render_full_report's per-cluster
+    # transcript loop has nothing to iterate -- render the failing node's
+    # transcript directly too, same as the old cli.py `replay` command did
+    # (walking tree.failures() rather than clusters).
+    render_transcript(console, tree, node_id, verdicts)
+    text = console.export_text()
+
+    assert "no-self-refund" in text
+    assert "Agent processed a refund itself" in text
 
 
 def test_ensure_current_or_raise_stamps_a_brand_new_db(tmp_path):
@@ -190,7 +217,12 @@ def test_cli_reports_the_migration_error_cleanly_not_a_raw_traceback(tmp_path, c
     conn.commit()
     conn.close()
 
-    exit_code = main(["report", "run-1", "--db", str(db_path)])
+    # ensure_current_or_raise() runs before any subcommand dispatches, so
+    # which subcommand is requested is irrelevant here — "run" is simply
+    # whichever one still exists (see cli.py's module docstring: "report",
+    # the command this test originally used, was retired in favor of the
+    # dashboard's equivalent view).
+    exit_code = main(["run", "--db", str(db_path)])
     out = capsys.readouterr().out
 
     assert exit_code == 1

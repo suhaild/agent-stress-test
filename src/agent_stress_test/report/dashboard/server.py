@@ -51,7 +51,14 @@ from agent_stress_test.orchestration.regression import (
     RegressionRunner,
     promote_clusters_to_cases,
 )
-from agent_stress_test.orchestration.reliability import ReliabilityReport, score_run
+from agent_stress_test.orchestration.reliability import (
+    ReliabilityReport,
+    SeverityWeightedModel,
+    TaskSuccessModel,
+    UnweightedFailureModel,
+    near_miss_ranking,
+    score_run,
+)
 from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.orchestration.search import SEVERITY_WEIGHT
 from agent_stress_test.orchestration.tree import ConversationTree
@@ -63,6 +70,16 @@ from agent_stress_test.store.migrations import ensure_current_or_raise
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 _DEFAULT_DB = "runs.sqlite"
+
+# Phase C6's scoring-model picker: maps the <select>'s value to a ScoringModel
+# class (see orchestration/reliability.py) — re-scores a run's already-loaded
+# nodes/verdicts on demand, never touches what was actually persisted as
+# Run.final_score.
+_SCORING_MODELS = {
+    SeverityWeightedModel.name: SeverityWeightedModel,
+    UnweightedFailureModel.name: UnweightedFailureModel,
+    TaskSuccessModel.name: TaskSuccessModel,
+}
 # server.py -> dashboard -> report -> agent_stress_test -> src -> repo root
 _CONFIG_AGENTS_DIR = Path(__file__).resolve().parents[4] / "config" / "agents"
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -291,6 +308,18 @@ def _worst_severity(cluster: Cluster, verdicts: list[Verdict]) -> str:
     return next(sev for sev, weight in SEVERITY_WEIGHT.items() if weight == best)
 
 
+def _conversation_verdicts_by_leaf(verdicts: list[Verdict]) -> dict[str, list[Verdict]]:
+    """Mirrors ``report/terminal.py``'s ``_conversation_verdicts_by_leaf`` —
+    same grouping (by the persona chain's leaf node id), so the CLI report
+    and the dashboard never disagree on how conversation-scoped verdicts are
+    organized."""
+    grouped: dict[str, list[Verdict]] = {}
+    for verdict in verdicts:
+        if verdict.scope == "conversation":
+            grouped.setdefault(verdict.node_id, []).append(verdict)
+    return grouped
+
+
 def _ranked_clusters(clusters: list[Cluster], verdicts: list[Verdict]) -> list[dict]:
     """Clusters worst-severity-first then largest-first, each paired with its
     severity — pre-computed here so the template just iterates, no logic."""
@@ -466,7 +495,10 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
         return True
 
     def reliability_live_context(tick: _EventTick) -> dict[str, Any]:
-        return {"reliability": score_run(tick.tree.nodes(), tick.tree.all_verdicts())}
+        return {
+            "run_id": run_id,
+            "reliability": score_run(tick.tree.nodes(), tick.tree.all_verdicts()),
+        }
 
     def failure_cadence(tick: _EventTick) -> bool:
         return tick.tree is not None and any(v.id not in seen for v in tick.tree.failures())
@@ -494,7 +526,10 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
         return tick.is_terminal
 
     def reliability_final_context(tick: _EventTick) -> dict[str, Any]:
-        return {"reliability": score_run(tick.final_tree.nodes(), tick.final_verdicts)}
+        return {
+            "run_id": run_id,
+            "reliability": score_run(tick.final_tree.nodes(), tick.final_verdicts),
+        }
 
     def clusters_context(tick: _EventTick) -> dict[str, Any]:
         return {
@@ -509,6 +544,15 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
             "ranked_clusters": tick.ranked_clusters,
             "tree": tick.final_tree,
             "failures": [v for v in tick.final_verdicts if not v.passed],
+        }
+
+    def near_misses_context(tick: _EventTick) -> dict[str, Any]:
+        return {"near_misses": near_miss_ranking(tick.final_tree.nodes(), tick.final_verdicts)}
+
+    def conversation_verdicts_context(tick: _EventTick) -> dict[str, Any]:
+        return {
+            "tree": tick.final_tree,
+            "conversation_groups": _conversation_verdicts_by_leaf(tick.final_verdicts),
         }
 
     return [
@@ -536,6 +580,19 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
         _LivePanel(
             "transcripts", "fragments/transcripts_section.html",
             terminal_cadence, transcripts_context,
+        ),
+        # Near-misses and conversation-level verdicts (Phase C6) are also
+        # terminal-only, same reasoning as clusters/transcripts above: a
+        # conversation verdict only attaches once its whole persona chain
+        # finishes, and re-ranking near-misses mid-run would churn the list
+        # on every node instead of settling once, at the end.
+        _LivePanel(
+            "near-misses", "fragments/near_miss_panel.html",
+            terminal_cadence, near_misses_context,
+        ),
+        _LivePanel(
+            "conversation-verdicts", "fragments/conversation_verdicts_section.html",
+            terminal_cadence, conversation_verdicts_context,
         ),
     ]
 
@@ -698,7 +755,39 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                 "locked_cluster_ids": locked,
                 "failures": failures,
                 "tree": tree,
+                "near_misses": near_miss_ranking(tree.nodes(), verdicts),
+                "conversation_groups": _conversation_verdicts_by_leaf(verdicts),
             },
+        )
+
+    @app.get("/runs/{run_id}/reliability", response_class=HTMLResponse)
+    def get_run_reliability(
+        request: Request, run_id: str, model: str = "severity_weighted"
+    ) -> HTMLResponse:
+        """Phase C6's scoring-model picker: re-score this run's already-loaded
+        nodes/verdicts under a different ScoringModel and return the gauge
+        fragment re-rendered — never touches the persisted Run.final_score."""
+        model_cls = _SCORING_MODELS.get(model)
+        if model_cls is None:
+            raise HTTPException(status_code=400, detail=f"Unknown scoring model '{model}'.")
+
+        with SqliteStore(app.state.db_path) as store:
+            run = store.get_run(run_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail=f"No run found with id '{run_id}'.")
+
+            live_tree = _live_trees.get(run_id)
+            if run.status in ("pending", "running") and live_tree is not None:
+                nodes, verdicts = live_tree.nodes(), live_tree.all_verdicts()
+            else:
+                _run, tree, verdicts, _clusters = _load_bundle(store, run_id)
+                nodes = tree.nodes()
+
+        reliability = score_run(nodes, verdicts, model=model_cls())
+        return templates.TemplateResponse(
+            request,
+            "fragments/reliability_gauge.html",
+            {"run_id": run_id, "reliability": reliability},
         )
 
     @app.get("/runs/{run_id}/events")

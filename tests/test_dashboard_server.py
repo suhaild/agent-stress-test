@@ -17,6 +17,12 @@ from agent_stress_test.models import (
     ToolUseBlock,
     Verdict,
 )
+from agent_stress_test.orchestration.reliability import (
+    NearMiss,
+    TaskSuccessModel,
+    near_miss_ranking,
+    score_run,
+)
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.providers.fake import FakeLLMProvider
 from agent_stress_test.report.dashboard.server import _diff_blocks, create_app, templates
@@ -648,6 +654,56 @@ def test_failure_row_severity_tag_markup_is_unchanged_by_the_macro_refactor():
     assert re.search(r'<span class="tag tag-fail">\s*critical\s*</span>', rendered)
 
 
+# --- reliability_gauge.html: model indicator + severity breakdown (C4) ----
+
+
+def test_reliability_gauge_shows_the_model_name_and_severity_breakdown():
+    nodes = [
+        Node(id="a", run_id="r", messages=[Message(role="user", content="hi")], target_reply="ok"),
+        Node(id="b", run_id="r", messages=[Message(role="user", content="hi")], target_reply="ok"),
+    ]
+    verdicts = [
+        Verdict(
+            run_id="r", node_id="a", passed=False, reason="r", tier="rules",
+            confidence=1.0, severity="critical",
+        ),
+    ]
+    reliability = score_run(nodes, verdicts)
+
+    rendered = templates.env.get_template("fragments/reliability_gauge.html").render(
+        reliability=reliability
+    )
+
+    assert "model: severity_weighted" in rendered  # the C4 default
+    assert re.search(r'<span class="tag tag-fail">\s*critical\s*</span>', rendered)
+    assert "&times;1" in rendered
+
+
+def test_reliability_gauge_shows_not_measured_when_the_model_is_not_applicable():
+    nodes = [Node(run_id="r", messages=[Message(role="user", content="hi")], target_reply="ok")]
+    verdicts = [
+        Verdict(
+            run_id="r", node_id=nodes[0].id, passed=False, reason="r", tier="rules",
+            confidence=1.0, severity="critical",
+        ),
+    ]
+    reliability = score_run(nodes, verdicts, model=TaskSuccessModel())
+
+    rendered = templates.env.get_template("fragments/reliability_gauge.html").render(
+        reliability=reliability
+    )
+
+    assert "Not measured" in rendered
+    assert "task_success" in rendered
+
+
+def test_reliability_gauge_with_no_reliability_shows_no_results_yet():
+    rendered = templates.env.get_template("fragments/reliability_gauge.html").render(
+        reliability=None
+    )
+    assert "No results yet." in rendered
+
+
 # --- render_content: list-shaped content + XSS (A6) -----------------------
 
 
@@ -734,6 +790,64 @@ def test_run_form_gates_the_target_url_override_behind_a_disclosure(tmp_path):
     assert "Advanced: Override Target Endpoint" in response.text
     assert 'name="target_url"' in response.text
     assert "showTargetOverride" in response.text
+
+
+def test_transcript_renders_a_tool_scoped_verdict_inline_not_as_a_rule():
+    # C1: a tool-argument verdict renders inline with the tool-call block, and
+    # is NOT swept into the generic rule verdict panel (which would mislabel it
+    # as "rule: —").
+    node = Node(
+        run_id="run-1",
+        messages=[Message(role="user", content="Where is order 12345?")],
+        target_reply="I looked up order 12346.",
+        tool_calls=[
+            ToolCall(id="c1", name="lookup_order", input_parameters={"order_id": "12346"})
+        ],
+    )
+    tool_verdict = Verdict(
+        run_id="run-1",
+        node_id=node.id,
+        passed=False,
+        rule_id=None,
+        reason="lookup_order used the wrong order_id.",
+        tier="llm",
+        confidence=0.9,
+        severity="major",
+        scope="tool",
+    )
+    tree = ConversationTree("run-1")
+    tree.add(node)
+    tree.attach_verdicts(node.id, [tool_verdict])
+
+    rendered = templates.env.get_template("fragments/transcript.html").render(
+        tree=tree, node_id=node.id, failures=[tool_verdict]
+    )
+
+    assert "argument correctness" in rendered  # the inline tool-verdict label
+    assert "used the wrong order_id" in rendered
+    # The rule panel stays empty (no rule-scoped failure) and never shows the
+    # tool verdict as "rule: —".
+    assert "No rule violation at this node." in rendered
+    assert "rule: —" not in rendered
+
+
+def test_failure_row_labels_a_tool_verdict_by_scope_not_as_a_rule():
+    verdict = Verdict(
+        run_id="run-1",
+        node_id="node-1",
+        passed=False,
+        rule_id=None,
+        reason="wrong order id",
+        tier="llm",
+        confidence=0.9,
+        severity="major",
+        scope="tool",
+    )
+    rendered = templates.env.get_template("fragments/failure_row.html").render(
+        verdict=verdict, node=None
+    )
+    assert "tool arguments" in rendered
+    assert "wrong order id" in rendered
 
 
 def test_transcript_renders_tool_role_messages_with_a_distinct_label():
@@ -939,4 +1053,227 @@ def test_run_form_wires_the_agent_select_to_reload_the_personas_picker(tmp_path)
     assert response.status_code == 200
     assert 'hx-get="/agent-specs/personas"' in response.text
     assert 'hx-target="#tactics-picker"' in response.text
-    assert 'hx-trigger="change"' in response.text
+
+
+# --- Phase C6: severity-mix bar + scoring-model picker ---------------------
+
+
+def test_reliability_gauge_shows_a_severity_mix_svg_bar():
+    nodes = [
+        Node(id="a", run_id="r", messages=[Message(role="user", content="hi")], target_reply="ok"),
+        Node(id="b", run_id="r", messages=[Message(role="user", content="hi")], target_reply="ok"),
+    ]
+    verdicts = [
+        Verdict(
+            run_id="r", node_id="a", passed=False, reason="r", tier="rules",
+            confidence=1.0, severity="critical",
+        ),
+    ]
+    reliability = score_run(nodes, verdicts)
+
+    rendered = templates.env.get_template("fragments/reliability_gauge.html").render(
+        reliability=reliability
+    )
+
+    assert "<svg" in rendered
+    assert "<rect" in rendered
+
+
+def test_reliability_gauge_shows_the_scoring_model_picker_when_run_id_is_given():
+    nodes = [Node(run_id="r", messages=[Message(role="user", content="hi")], target_reply="ok")]
+    reliability = score_run(nodes, [])
+
+    rendered = templates.env.get_template("fragments/reliability_gauge.html").render(
+        reliability=reliability, run_id="run-123"
+    )
+
+    assert '<select name="model"' in rendered
+    assert 'hx-get="/runs/run-123/reliability"' in rendered
+
+
+def test_reliability_gauge_omits_the_picker_without_a_run_id():
+    nodes = [Node(run_id="r", messages=[Message(role="user", content="hi")], target_reply="ok")]
+    reliability = score_run(nodes, [])
+
+    rendered = templates.env.get_template("fragments/reliability_gauge.html").render(
+        reliability=reliability
+    )
+
+    assert "<select" not in rendered
+
+
+def test_get_run_reliability_route_rescoring_with_an_explicit_model(tmp_path):
+    client = _client(tmp_path)
+    run_id = _start_run(client)
+    _wait_for_terminal_status(client, run_id)
+
+    response = client.get(f"/runs/{run_id}/reliability", params={"model": "unweighted"})
+
+    assert response.status_code == 200
+    assert "model: unweighted" in response.text
+
+
+def test_get_run_reliability_route_rejects_an_unknown_model(tmp_path):
+    client = _client(tmp_path)
+    run_id = _start_run(client)
+    _wait_for_terminal_status(client, run_id)
+
+    response = client.get(f"/runs/{run_id}/reliability", params={"model": "not-a-real-model"})
+
+    assert response.status_code == 400
+
+
+def test_get_run_reliability_route_unknown_run_404s(tmp_path):
+    client = _client(tmp_path)
+
+    response = client.get("/runs/does-not-exist/reliability")
+
+    assert response.status_code == 404
+
+
+# --- Phase C6: near-miss panel ---------------------------------------------
+
+
+def test_near_miss_panel_renders_a_proximity_bar():
+    rendered = templates.env.get_template("fragments/near_miss_panel.html").render(
+        near_misses=[NearMiss(node_id="node-1", proximity=0.8, tactic="hostile")]
+    )
+
+    assert "hostile" in rendered
+    assert "node-1" in rendered
+    assert "<svg" in rendered
+    assert "80%" in rendered
+
+
+def test_near_miss_panel_empty_shows_clean_message():
+    rendered = templates.env.get_template("fragments/near_miss_panel.html").render(near_misses=[])
+
+    assert "No near-misses" in rendered
+
+
+def test_near_miss_ranking_feeds_the_panel_end_to_end():
+    """Not just the template in isolation -- the same near_miss_ranking()
+    the dashboard's live loop calls, rendered through the real fragment."""
+    nodes = [
+        Node(
+            id="a",
+            run_id="r",
+            messages=[Message(role="user", content="hi")],
+            target_reply="ok",
+            tactic="hostile",
+        ),
+    ]
+    verdicts = [
+        Verdict(
+            run_id="r",
+            node_id="a",
+            passed=True,
+            reason="barely passed",
+            tier="llm",
+            confidence=0.1,
+            severity="minor",
+        ),
+    ]
+    near_misses = near_miss_ranking(nodes, verdicts)
+
+    rendered = templates.env.get_template("fragments/near_miss_panel.html").render(
+        near_misses=near_misses
+    )
+
+    assert "hostile" in rendered
+    assert "90%" in rendered  # 1 - confidence(0.1)
+
+
+# --- Phase C2/C6: conversation-verdicts panel ------------------------------
+
+
+def test_conversation_verdicts_section_groups_by_leaf():
+    tree = ConversationTree("run-conv")
+    root = Node(
+        run_id="run-conv",
+        messages=[Message(role="user", content="hi")],
+        target_reply="Happy to help.",
+        tactic="hostile",
+    )
+    tree.add(root)
+    verdict = Verdict(
+        run_id="run-conv",
+        node_id=root.id,
+        passed=False,
+        rule_id="role_adherence",
+        reason="Broke character mid-conversation.",
+        tier="llm",
+        confidence=0.8,
+        severity="major",
+        scope="conversation",
+    )
+    tree.attach_verdicts(root.id, [verdict])
+    conversation_groups = {root.id: [verdict]}
+
+    rendered = templates.env.get_template("fragments/conversation_verdicts_section.html").render(
+        tree=tree, conversation_groups=conversation_groups
+    )
+
+    assert "hostile" in rendered
+    assert "role_adherence" in rendered
+    assert re.search(r'<span class="tag tag-fail">\s*fail\s*</span>', rendered)
+    assert "Broke character mid-conversation." in rendered
+
+
+def test_conversation_verdicts_section_empty_renders_nothing():
+    rendered = templates.env.get_template("fragments/conversation_verdicts_section.html").render(
+        tree=ConversationTree("empty"), conversation_groups={}
+    )
+
+    assert rendered.strip() == ""
+
+
+# --- Phase C6: instability badge in the transcript fragment ---------------
+
+
+def test_transcript_shows_the_instability_badge_on_a_high_instability_node():
+    node = Node(
+        run_id="run-1",
+        messages=[Message(role="user", content="hi")],
+        target_reply="Happy to help.",
+        instability_score=0.85,
+    )
+
+    rendered = _render_transcript(node)
+
+    assert "instability: 85%" in rendered
+
+
+def test_transcript_omits_the_instability_badge_when_never_scored():
+    node = Node(
+        run_id="run-1",
+        messages=[Message(role="user", content="hi")],
+        target_reply="Happy to help.",
+    )
+
+    rendered = _render_transcript(node)
+
+    assert "instability" not in rendered
+
+
+# --- Phase C6: new live panels are wired into the R2 registry -------------
+
+
+def test_new_c6_panels_fire_in_the_sse_stream(tmp_path):
+    client = _client(tmp_path)
+    run_id = _start_run(client)
+
+    events: set[str] = set()
+    deadline = time.monotonic() + 10.0
+    with client.stream("GET", f"/runs/{run_id}/events") as response:
+        assert response.status_code == 200
+        for line in response.iter_lines():
+            if line.startswith("event:"):
+                events.add(line.split(":", 1)[1].strip())
+            if {"near-misses", "conversation-verdicts"} <= events:
+                break
+            if time.monotonic() > deadline:
+                break
+
+    assert "near-misses" in events
+    assert "conversation-verdicts" in events

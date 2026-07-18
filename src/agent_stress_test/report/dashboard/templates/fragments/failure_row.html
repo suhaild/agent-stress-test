@@ -9,7 +9,9 @@
     {% endif %}
   </div>
   <p class="text-sm text-[var(--ink)]">
-    <span class="font-mono text-[var(--ink-dim)]">{{ verdict.rule_id or "—" }}</span>
+    <span class="font-mono text-[var(--ink-dim)]">
+      {%- if verdict.scope == "tool" %}tool arguments{% elif verdict.scope == "task" %}task completion{% else %}{{ verdict.rule_id or "—" }}{% endif -%}
+    </span>
     <span class="text-[var(--ink-faint)]">·</span> {{ verdict.reason }}
   </p>
 </div>

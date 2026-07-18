@@ -45,6 +45,47 @@ def test_generate_with_schema_returns_a_validated_model_via_the_shaped_fake():
     assert result.is_complete is False
 
 
+# --- Fence-stripping (Phase C3): real models wrap JSON in ``` fences -------
+
+
+def test_generate_with_schema_strips_a_markdown_code_fence():
+    # Found live (Phase C3's cost-measurement run against real Haiku): every
+    # schema-constrained DeepEval call funnels through this one shim, and a
+    # real Claude call commonly wraps its JSON reply in a ```json fence --
+    # model_validate_json() can't parse that directly. Before this was
+    # fixed, every live call silently fell back to judge.py's "malformed
+    # output, default to pass" path instead of ever actually judging.
+    fenced = '```json\n{"is_complete": false, "reason": "not done"}\n```'
+    provider = FakeLLMProvider(responses=[fenced])
+    shim = LLMProviderAsDeepEvalLLM(provider)
+
+    result = shim.generate("Is this conversation done?", schema=ConversationCompletion)
+
+    assert isinstance(result, ConversationCompletion)
+    assert result.is_complete is False
+
+
+def test_generate_with_schema_strips_a_bare_triple_backtick_fence_with_no_language_tag():
+    provider = FakeLLMProvider(responses=['```\n{"is_complete": true, "reason": "done"}\n```'])
+    shim = LLMProviderAsDeepEvalLLM(provider)
+
+    result = shim.generate("Is this conversation done?", schema=ConversationCompletion)
+
+    assert result.is_complete is True
+
+
+def test_generate_with_schema_leaves_unfenced_json_unchanged():
+    # Every offline fake (ShapedFakeLLM/FakeLLMProvider) already returns raw,
+    # unfenced JSON -- confirm fence-stripping is a no-op passthrough there,
+    # not something that could corrupt an already-valid response.
+    provider = FakeLLMProvider(responses=['{"is_complete": false, "reason": "not done"}'])
+    shim = LLMProviderAsDeepEvalLLM(provider)
+
+    result = shim.generate("Is this conversation done?", schema=ConversationCompletion)
+
+    assert result.is_complete is False
+
+
 def test_a_generate_awaited_returns_the_same_as_generate():
     shim = LLMProviderAsDeepEvalLLM(ShapedFakeLLM())
 

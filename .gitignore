@@ -16,3 +16,8 @@ build/
 .pytest_cache/
 .ruff_cache/
 .claude/skills
+.ua
+doc
+# Vendored real-world target agent (aomizuki0307/agent-toolkit, MIT) — cloned
+# locally, not committed. See README.md's "Target agents" section.
+vendor/
