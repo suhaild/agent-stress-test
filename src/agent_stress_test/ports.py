@@ -2,6 +2,7 @@
 
 import threading
 from abc import ABC, abstractmethod
+from typing import Protocol
 
 from agent_stress_test.models import (
     AgentResponse,
@@ -14,6 +15,7 @@ from agent_stress_test.models import (
     StressProfile,
     SystemPromptVersion,
     TokenUsage,
+    ToolCall,
     Verdict,
 )
 
@@ -77,6 +79,20 @@ class LLMProvider(ABC):
 
     @abstractmethod
     def sample_n(self, messages: list[Message], n: int) -> list[str]: ...
+
+
+class ToolCallingLLM(Protocol):
+    """The native tool-calling capability ``ProviderAgent`` needs from its
+    backing provider — narrower than the full ``LLMProvider`` port, since
+    only a provider that supports real tool-calling (today: ``LiteLLMProvider``)
+    can offer it. A structural ``Protocol`` rather than an ABC so a duck-typed
+    test double (see ``tests/test_targets.py``'s ``_FakeToolCallingProvider``)
+    satisfies it without inheriting anything.
+    """
+
+    def complete_with_tools(
+        self, messages: list[Message], tools: list[dict]
+    ) -> tuple[str, list[ToolCall]]: ...
 
 
 class TargetAgent(ABC):

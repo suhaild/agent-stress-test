@@ -2,10 +2,11 @@
 
 Unlike ``SampleAgent`` (which narrates ReAct-style reasoning as plain text
 and parses it back out), this issues the AgentSpec's tools to the model
-through litellm's native tool-calling interface
-(``LiteLLMProvider.complete_with_tools``) and records genuine ``ToolCall``
-structures — useful for stress-testing how a target behaves with real
-tool_use content blocks, not a text-parsed simulation of them.
+through a provider's native tool-calling interface
+(``ports.ToolCallingLLM.complete_with_tools`` — ``LiteLLMProvider`` is the
+only implementation today) and records genuine ``ToolCall`` structures —
+useful for stress-testing how a target behaves with real tool_use content
+blocks, not a text-parsed simulation of them.
 """
 
 from agent_stress_test.models import (
@@ -17,8 +18,7 @@ from agent_stress_test.models import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from agent_stress_test.ports import TargetAgent
-from agent_stress_test.providers.litellm_provider import LiteLLMProvider
+from agent_stress_test.ports import TargetAgent, ToolCallingLLM
 from agent_stress_test.targets.prompt_rendering import _render_system_prompt
 
 # No tool declared on an AgentSpec has a real backend here (ToolSpec only
@@ -49,7 +49,8 @@ def _tool_schemas(agent_spec: AgentSpec) -> list[dict]:
 
 
 class ProviderAgent(TargetAgent):
-    """Wraps a bare model id (via ``LiteLLMProvider``) as a TargetAgent.
+    """Wraps a ``ToolCallingLLM`` (in practice, a bare model id via
+    ``LiteLLMProvider``) as a TargetAgent.
 
     Bounded by ``max_tool_rounds`` so a model that keeps calling tools can
     never loop forever — each round resolves every pending tool_use with the
@@ -58,7 +59,7 @@ class ProviderAgent(TargetAgent):
     """
 
     def __init__(
-        self, provider: LiteLLMProvider, agent_spec: AgentSpec, *, max_tool_rounds: int = 3
+        self, provider: ToolCallingLLM, agent_spec: AgentSpec, *, max_tool_rounds: int = 3
     ) -> None:
         self._provider = provider
         self._agent_spec = agent_spec

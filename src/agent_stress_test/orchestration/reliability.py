@@ -291,12 +291,14 @@ def near_miss_ranking(
     reported alongside the confirmed failures rather than buried in the tree.
 
     Computed directly from ``nodes``/``verdicts`` (the same persisted shape
-    every report surface already has), not from ``SearchResult.near_miss`` —
-    that field only exists on ``GreedyBestFirstSearch``'s result, while this
-    works for a run produced by *any* ``SearchStrategy``, including the
-    ``DeepEvalConversationSearch`` engine ``build_runner`` actually wires by
-    default. A node with 0.0 proximity (a clean pass with nothing to report)
-    is excluded — there's nothing "near" about it.
+    every report surface already has), not from
+    ``SearchResult.exploration_detail`` — that field is only ever populated
+    by ``GreedyBestFirstSearch``'s result (``None`` for other strategies —
+    see its docstring), while this works for a run produced by *any*
+    ``SearchStrategy``, including the ``DeepEvalConversationSearch`` engine
+    ``build_runner`` actually wires by default. A node with 0.0 proximity (a
+    clean pass with nothing to report) is excluded — there's nothing "near"
+    about it.
     """
     by_node = _verdicts_by_node(verdicts)
     scored: list[NearMiss] = []

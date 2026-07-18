@@ -211,8 +211,9 @@ def test_search_surfaces_the_closest_near_miss(sample_agent_spec_path):
     result = strategy.search(tree, seed(), budget=1)
 
     assert not result.failures  # a near-miss is not a failure
-    assert result.near_miss is not None
-    assert result.near_miss.tactic == "hostile"
+    assert result.exploration_detail is not None
+    assert result.exploration_detail.near_miss is not None
+    assert result.exploration_detail.near_miss.tactic == "hostile"
 
 
 def test_search_reports_a_deflecting_reply_as_its_own_signal_not_a_pass(sample_agent_spec_path):
@@ -223,7 +224,8 @@ def test_search_reports_a_deflecting_reply_as_its_own_signal_not_a_pass(sample_a
     result = strategy.search(tree, seed(), budget=0)
 
     [root] = tree.nodes()
-    assert result.deflections == [root.id]
+    assert result.exploration_detail is not None
+    assert result.exploration_detail.deflections == [root.id]
     # RulesJudge finds no rule violation in a bare refusal -- it's a PASS by
     # the rules, distinct from (and not counted among) result.failures.
     assert not result.failures

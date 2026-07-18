@@ -14,8 +14,18 @@ from __future__ import annotations
 import argparse
 import importlib
 from collections.abc import Iterable
+from uuid import uuid4
 
-from agent_stress_test.models import AgentSpec, Cluster, Node, Run, Verdict
+from agent_stress_test.models import (
+    AgentSpec,
+    Cluster,
+    Node,
+    ProfilePersona,
+    Rule,
+    Run,
+    StressProfile,
+    Verdict,
+)
 from agent_stress_test.orchestration.runner import RunResult
 from agent_stress_test.orchestration.tree import ConversationTree
 from agent_stress_test.ports import LLMProvider, Store, TargetAgent
@@ -185,3 +195,64 @@ def cluster_and_persist(result: RunResult, store: Store) -> list[Cluster]:
     for cluster in clusters:
         store.save_cluster(cluster)
     return clusters
+
+
+def resolve_cluster_remediation_target(
+    tree: ConversationTree, clusters: list[Cluster], cluster_id: str, agent_spec: AgentSpec
+) -> tuple[Node, Rule, Verdict]:
+    """The (node, rule, failing verdict) a "suggest a fix" request needs for
+    one cluster: the cluster must name a representative node, that node must
+    actually carry a failing verdict, and the verdict's rule must still exist
+    on the current spec. Raises ``ValueError`` (the same contract every other
+    lookup helper here uses — see ``_find_agent_spec_path_by_name`` and
+    friends in ``report/dashboard/server.py``) describing exactly which
+    precondition failed, so the one caller (the dashboard's "suggest a fix"
+    route) only translates that into an HTTP 404, never re-derives the chain
+    itself.
+    """
+    cluster = next((c for c in clusters if c.id == cluster_id), None)
+    if cluster is None or cluster.representative_node_id is None:
+        raise ValueError(f"Cluster '{cluster_id}' has no representative node.")
+    node = tree.get(cluster.representative_node_id)
+    failing = [v for v in tree.verdicts(cluster.representative_node_id) if not v.passed]
+    if not failing:
+        raise ValueError("Representative node has no failing verdict.")
+    verdict = failing[0]
+    rule = next((r for r in agent_spec.rules if r.id == verdict.rule_id), None)
+    if rule is None:
+        raise ValueError(f"Rule '{verdict.rule_id}' not found.")
+    return node, rule, verdict
+
+
+def apply_profile_edits(
+    existing: StressProfile,
+    *,
+    names: list[str],
+    scenarios: list[str],
+    user_descriptions: list[str],
+    rule_ids: list[str],
+    rule_texts: list[str],
+    rule_severities: list[str],
+) -> StressProfile:
+    """Fold a submitted profile-editor form into an updated StressProfile.
+
+    What counts as a valid edited row is a decision, not a translation, so it
+    lives here rather than in the dashboard route: a persona row needs all
+    three fields non-blank; a rule row needs non-blank text (a blank
+    ``rule_id`` mints a fresh one, for a newly-added row the form has no id
+    for yet).
+    """
+    return existing.model_copy(
+        update={
+            "personas": [
+                ProfilePersona(name=n, scenario=s, user_description=u)
+                for n, s, u in zip(names, scenarios, user_descriptions)
+                if n.strip() and s.strip() and u.strip()
+            ],
+            "candidate_rules": [
+                Rule(id=rid or str(uuid4()), text=t, severity=sev)
+                for rid, t, sev in zip(rule_ids, rule_texts, rule_severities)
+                if t.strip()
+            ],
+        }
+    )

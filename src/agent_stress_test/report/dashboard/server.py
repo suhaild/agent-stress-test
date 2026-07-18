@@ -26,16 +26,18 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.templating import Jinja2Templates
 
 from agent_stress_test.composition import (
+    apply_profile_edits,
     build_provider,
     build_target,
     cluster_and_persist,
     load_bundle,
+    resolve_cluster_remediation_target,
     resolve_sim_provider_name,
     resolve_tactics,
 )
 from agent_stress_test.config import load_agent_spec, load_settings
 from agent_stress_test.config_writer import apply_system_prompt
-from agent_stress_test.models import AgentSpec, ProfilePersona, Rule, Run, Verdict
+from agent_stress_test.models import AgentSpec, Run, Verdict
 from agent_stress_test.orchestration.regression import (
     RegressionRunner,
     promote_clusters_to_cases,
@@ -443,21 +445,12 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
         load_settings()
         with SqliteStore(app.state.db_path) as store:
             run, tree, _verdicts, clusters = load_bundle(store, run_id)
-        cluster = next((c for c in clusters if c.id == cluster_id), None)
-        if cluster is None or cluster.representative_node_id is None:
-            raise HTTPException(
-                status_code=404, detail=f"Cluster '{cluster_id}' has no representative node."
+        try:
+            node, rule, verdict = resolve_cluster_remediation_target(
+                tree, clusters, cluster_id, run.agent_spec
             )
-        node = tree.get(cluster.representative_node_id)
-        failing = [v for v in tree.verdicts(cluster.representative_node_id) if not v.passed]
-        if not failing:
-            raise HTTPException(
-                status_code=404, detail="Representative node has no failing verdict."
-            )
-        verdict = failing[0]
-        rule = next((r for r in run.agent_spec.rules if r.id == verdict.rule_id), None)
-        if rule is None:
-            raise HTTPException(status_code=404, detail=f"Rule '{verdict.rule_id}' not found.")
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         suggestion = RemediationSuggester(build_provider(provider)).suggest(
             run.agent_spec, rule, node.target_reply, verdict.reason
@@ -561,12 +554,6 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     @app.post("/agent-specs/{agent_spec_name}/profile/save", response_class=HTMLResponse)
     async def post_save_profile(request: Request, agent_spec_name: str) -> HTMLResponse:
         form = await request.form()
-        names = form.getlist("persona_name")
-        scenarios = form.getlist("persona_scenario")
-        user_descriptions = form.getlist("persona_user_description")
-        rule_ids = form.getlist("rule_id")
-        rule_texts = form.getlist("rule_text")
-        rule_severities = form.getlist("rule_severity")
 
         with SqliteStore(app.state.db_path) as store:
             existing = store.get_stress_profile(agent_spec_name)
@@ -575,19 +562,14 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                     status_code=404, detail=f"No stress profile for '{agent_spec_name}' yet."
                 )
 
-            updated = existing.model_copy(
-                update={
-                    "personas": [
-                        ProfilePersona(name=n, scenario=s, user_description=u)
-                        for n, s, u in zip(names, scenarios, user_descriptions)
-                        if n.strip() and s.strip() and u.strip()
-                    ],
-                    "candidate_rules": [
-                        Rule(id=rid or str(uuid4()), text=t, severity=sev)
-                        for rid, t, sev in zip(rule_ids, rule_texts, rule_severities)
-                        if t.strip()
-                    ],
-                }
+            updated = apply_profile_edits(
+                existing,
+                names=form.getlist("persona_name"),
+                scenarios=form.getlist("persona_scenario"),
+                user_descriptions=form.getlist("persona_user_description"),
+                rule_ids=form.getlist("rule_id"),
+                rule_texts=form.getlist("rule_text"),
+                rule_severities=form.getlist("rule_severity"),
             )
             store.save_stress_profile(updated)
 

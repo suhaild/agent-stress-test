@@ -22,13 +22,14 @@ Phase C5 sharpens that steering signal without adding any new dependency
      existing run's breadth silently changing.
   3. a deflecting reply (refusal/non-answer/redirect — see
      ``reasoning/judge.py``'s ``is_deflection``) is tracked as its OWN signal,
-     both nudging priority and reported on ``SearchResult.deflections`` —
-     distinct from a genuine rule pass, since dodging the question isn't the
-     same as answering it correctly.
+     both nudging priority and reported on
+     ``SearchResult.exploration_detail.deflections`` — distinct from a
+     genuine rule pass, since dodging the question isn't the same as
+     answering it correctly.
   4. the single closest near-miss (the highest-graded-proximity node that
      never actually failed) is tracked across the whole search and reported
-     as ``SearchResult.near_miss`` — a first-class result, not just a number
-     buried in the tree.
+     as ``SearchResult.exploration_detail.near_miss`` — a first-class
+     result, not just a number buried in the tree.
 """
 
 import heapq
@@ -141,30 +142,58 @@ class Frontier:
 
 
 @dataclass(frozen=True)
-class SearchResult:
-    """Summary of one search. The tree (Blackboard) holds the full detail.
+class ExplorationDetail:
+    """Frontier-exploration signals only a priority-driven search over a
+    shared tree can produce — see ``SearchResult.exploration_detail``.
 
     ``near_miss`` (Phase C5) is the passing node with the highest
     ``graded_proximity`` seen anywhere in the search — the closest the target
     came to failing without actually failing — or ``None`` if every node was
     either a clean pass (0 proximity) or an outright failure (already in
-    ``failures``). ``deflections`` is every node id whose reply was flagged
-    by ``reasoning/judge.py``'s ``is_deflection`` — its own signal, tracked
-    separately so a deflection is never mistaken for a genuine rule pass.
-    Both default to "nothing found", so existing callers that build a
-    ``SearchResult`` without them (e.g. ``orchestration/deepeval_search.py``)
-    are unaffected.
+    ``SearchResult.failures``). ``deflections`` is every node id whose reply
+    was flagged by ``reasoning/judge.py``'s ``is_deflection`` — its own
+    signal, tracked separately so a deflection is never mistaken for a
+    genuine rule pass.
+    """
+
+    near_miss: Node | None = None
+    deflections: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """Summary of one search. The tree (Blackboard) holds the full detail.
+
+    ``exploration_detail`` is populated only by strategies that maintain a
+    priority frontier over a shared tree (``GreedyBestFirstSearch``) — it is
+    ``None``, not an empty ``ExplorationDetail``, for strategies that don't
+    track this concept at all (``DeepEvalConversationSearch``, which ingests
+    independent per-persona conversations with no shared frontier to rank).
+    That distinction matters: ``None`` means "this strategy doesn't measure
+    near-misses/deflections," while a populated ``ExplorationDetail`` with
+    ``near_miss=None`` means "measured, and found none" — collapsing the two
+    into shared top-level fields defaulting to "nothing found" would make
+    them indistinguishable, which is exactly the trap a caller relying on
+    ``SearchStrategy``'s contract could fall into.
     """
 
     expansions: int
     nodes_created: int
     failures: list[Verdict] = field(default_factory=list)
-    near_miss: Node | None = None
-    deflections: list[str] = field(default_factory=list)
+    exploration_detail: ExplorationDetail | None = None
 
 
 class SearchStrategy(ABC):
-    """A strategy for exploring the conversation tree (Strategy pattern)."""
+    """A strategy for exploring the conversation tree (Strategy pattern).
+
+    Every implementation must reliably populate ``SearchResult.expansions``/
+    ``.nodes_created``/``.failures`` — the only fields a caller may read
+    without checking which concrete strategy produced the result.
+    ``exploration_detail`` is optional and strategy-specific (see its
+    docstring); ``budget`` and ``seed_messages`` may also carry a
+    strategy-specific meaning (see e.g. ``DeepEvalConversationSearch``'s
+    docstring) despite sharing this one method signature.
+    """
 
     @abstractmethod
     def search(
@@ -257,8 +286,7 @@ class GreedyBestFirstSearch(SearchStrategy):
             expansions=expansions,
             nodes_created=nodes_created,
             failures=failures,
-            near_miss=near_miss,
-            deflections=deflections,
+            exploration_detail=ExplorationDetail(near_miss=near_miss, deflections=deflections),
         )
 
     def _expand(
