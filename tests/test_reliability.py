@@ -2,10 +2,12 @@ import pytest
 
 from agent_stress_test.models import Message, Node, Verdict
 from agent_stress_test.orchestration.reliability import (
+    CRITICAL_FAILURE_SCORE_CAP,
     ReliabilityReport,
     SeverityWeightedModel,
     TaskSuccessModel,
     UnweightedFailureModel,
+    apply_mandatory_minimum_cap,
     average_conversation_depth,
     compounding_reliability,
     score_run,
@@ -237,9 +239,12 @@ def test_severity_breakdown_is_populated_even_on_the_default_model():
 
 def _severity_weighted_fixture() -> tuple[list[Node], list[Verdict]]:
     # Three independent single-node conversations (depth 1 each): one fails
-    # critical, one fails minor, one passes clean.
+    # major, one fails minor, one passes clean. Deliberately no "critical"
+    # here -- this fixture isolates SeverityWeightedModel's raw weighted-
+    # average math; see the mandatory-minimum-cap tests below for behavior
+    # once a critical failure is in the mix.
     nodes = [node("a"), node("b"), node("c")]
-    verdicts = [failing_verdict("a", "critical"), failing_verdict("b", "minor")]
+    verdicts = [failing_verdict("a", "major"), failing_verdict("b", "minor")]
     return nodes, verdicts
 
 
@@ -248,14 +253,14 @@ def test_severity_weighted_model_produces_the_expected_number_on_a_fixed_tree():
 
     report = score_run(nodes, verdicts, model=SeverityWeightedModel())
 
-    # weight_sum = 1.0 (critical) + 0.34 (minor) + 0.0 (clean) = 1.34, /3 steps.
+    # weight_sum = 0.67 (major) + 0.34 (minor) + 0.0 (clean) = 1.01, /3 steps.
     assert report.model_name == "severity_weighted"
     assert report.total_steps == 3
     assert report.failing_steps == 2  # same failing-step COUNT as unweighted
-    assert report.per_step_failure_rate == pytest.approx(1.34 / 3)
+    assert report.per_step_failure_rate == pytest.approx(1.01 / 3)
     assert report.conversation_depth == 1.0
-    assert report.score == pytest.approx((1 - 1.34 / 3) ** 1.0)
-    assert report.severity_breakdown == {"critical": 1, "major": 0, "minor": 1}
+    assert report.score == pytest.approx((1 - 1.01 / 3) ** 1.0)
+    assert report.severity_breakdown == {"critical": 0, "major": 1, "minor": 1}
 
 
 def test_severity_weighted_model_differs_from_the_unweighted_model():
@@ -264,7 +269,7 @@ def test_severity_weighted_model_differs_from_the_unweighted_model():
     unweighted = score_run(nodes, verdicts, model=UnweightedFailureModel())
     weighted = score_run(nodes, verdicts, model=SeverityWeightedModel())
 
-    # Same failing-step count (2 of 3), but the weighted rate (a critical +
+    # Same failing-step count (2 of 3), but the weighted rate (a major +
     # a minor) is lower than the flat 2/3 unweighted rate -- and so the
     # weighted score is HIGHER: severity weighting rewards a run whose
     # failures skew minor.
@@ -290,6 +295,63 @@ def test_severity_weighted_model_of_all_critical_failures_scores_lower_than_all_
     # Same failing-step COUNT (2 of 2 either way) -- severity is what differs.
     assert all_critical.failing_steps == all_minor.failing_steps == 2
     assert all_critical.score < all_minor.score
+
+
+# --- apply_mandatory_minimum_cap: a critical failure caps the ceiling -----
+
+
+def test_apply_mandatory_minimum_cap_lowers_a_score_above_the_cap_when_critical_present():
+    capped = apply_mandatory_minimum_cap(0.9, {"critical": 1, "major": 0, "minor": 0})
+    assert capped == CRITICAL_FAILURE_SCORE_CAP
+
+
+def test_apply_mandatory_minimum_cap_never_raises_a_score_already_below_the_cap():
+    # An already-bad score (more critical failures wouldn't make it worse)
+    # is returned unchanged -- the cap is a ceiling, not a fixed value.
+    capped = apply_mandatory_minimum_cap(0.1, {"critical": 2, "major": 0, "minor": 0})
+    assert capped == 0.1
+
+
+def test_apply_mandatory_minimum_cap_leaves_a_score_untouched_with_no_critical_failures():
+    capped = apply_mandatory_minimum_cap(0.95, {"critical": 0, "major": 3, "minor": 1})
+    assert capped == 0.95
+
+
+def test_score_run_caps_a_diluted_critical_failure_via_the_default_model():
+    # One critical failure among 20 independent single-node conversations --
+    # SeverityWeightedModel's raw weighted average would dilute it to a
+    # deceptively high score (weight_sum 1.0 / 20 steps = 0.05, raw score
+    # 0.95 ** 1.0 = 0.95); the mandatory-minimum cap catches it regardless.
+    nodes = [node(f"n{i}") for i in range(20)]
+    verdicts = [failing_verdict("n0", "critical")]
+
+    report = score_run(nodes, verdicts)
+
+    assert report.severity_breakdown["critical"] == 1
+    assert report.score == CRITICAL_FAILURE_SCORE_CAP
+
+
+def test_score_run_applies_the_cap_regardless_of_scoring_model():
+    # Same dilution as above, but under UnweightedFailureModel (rate 1/20 =
+    # 0.05, raw score 0.95 ** 1.0 = 0.95) -- still capped, since score_run
+    # applies the cap itself, not any one ScoringModel.
+    nodes = [node(f"n{i}") for i in range(20)]
+    verdicts = [failing_verdict("n0", "critical")]
+
+    report = score_run(nodes, verdicts, model=UnweightedFailureModel())
+
+    assert report.score == CRITICAL_FAILURE_SCORE_CAP
+
+
+def test_score_run_does_not_raise_an_already_low_critical_score():
+    # Every step fails critical -- raw score is already 0.0, well below the
+    # cap, so capping this run is a no-op.
+    nodes = [node("a"), node("b")]
+    verdicts = [failing_verdict("a", "critical"), failing_verdict("b", "critical")]
+
+    report = score_run(nodes, verdicts)
+
+    assert report.score == 0.0
 
 
 # --- TaskSuccessModel: scoped to scope="task" verdicts only (C4) ---------

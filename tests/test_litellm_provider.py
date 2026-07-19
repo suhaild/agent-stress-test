@@ -1,9 +1,17 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import litellm
 import pytest
 
 from agent_stress_test.models import Message, TextBlock, ToolCall, ToolResultBlock, ToolUseBlock
+from agent_stress_test.ports import (
+    ProviderAuthError,
+    ProviderConnectionError,
+    ProviderError,
+    ProviderRateLimitError,
+    ProviderTimeoutError,
+)
 from agent_stress_test.providers.litellm_provider import LiteLLMProvider
 
 
@@ -275,3 +283,81 @@ def test_complete_with_no_usage_on_the_response_records_zero_without_crashing(mo
 
     usage = provider.meter.total()
     assert usage.total_tokens == 0
+
+
+# --- provider error hierarchy (P6) -------------------------------------------
+
+
+def test_complete_translates_authentication_error_to_provider_auth_error(mock_completion):
+    mock_completion.side_effect = litellm.exceptions.AuthenticationError(
+        message="invalid api key", llm_provider="anthropic", model="claude-3-5-sonnet-20241022"
+    )
+    provider = LiteLLMProvider(model="claude-3-5-sonnet-20241022")
+
+    with pytest.raises(ProviderAuthError, match="claude-3-5-sonnet-20241022"):
+        provider.complete([Message(role="user", content="hi")])
+
+
+def test_complete_translates_rate_limit_error_to_retryable_provider_error(mock_completion):
+    mock_completion.side_effect = litellm.exceptions.RateLimitError(
+        message="too many requests", llm_provider="anthropic", model="claude-3-5-sonnet-20241022"
+    )
+    provider = LiteLLMProvider(model="claude-3-5-sonnet-20241022")
+
+    with pytest.raises(ProviderRateLimitError) as exc_info:
+        provider.complete([Message(role="user", content="hi")])
+    assert exc_info.value.retryable is True
+
+
+def test_complete_translates_timeout_to_retryable_provider_error(mock_completion):
+    mock_completion.side_effect = litellm.exceptions.Timeout(
+        message="timed out", model="claude-3-5-sonnet-20241022", llm_provider="anthropic"
+    )
+    provider = LiteLLMProvider(model="claude-3-5-sonnet-20241022")
+
+    with pytest.raises(ProviderTimeoutError) as exc_info:
+        provider.complete([Message(role="user", content="hi")])
+    assert exc_info.value.retryable is True
+
+
+def test_complete_translates_connection_error_to_retryable_provider_error(mock_completion):
+    mock_completion.side_effect = litellm.exceptions.APIConnectionError(
+        message="connection failed", llm_provider="anthropic", model="claude-3-5-sonnet-20241022"
+    )
+    provider = LiteLLMProvider(model="claude-3-5-sonnet-20241022")
+
+    with pytest.raises(ProviderConnectionError) as exc_info:
+        provider.complete([Message(role="user", content="hi")])
+    assert exc_info.value.retryable is True
+
+
+def test_complete_translates_unrecognized_provider_error_to_fatal_generic_error(mock_completion):
+    mock_completion.side_effect = litellm.exceptions.BadRequestError(
+        message="malformed request", model="claude-3-5-sonnet-20241022", llm_provider="anthropic"
+    )
+    provider = LiteLLMProvider(model="claude-3-5-sonnet-20241022")
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.complete([Message(role="user", content="hi")])
+    assert exc_info.value.retryable is False
+    assert not isinstance(exc_info.value, ProviderAuthError)
+
+
+def test_complete_with_tools_also_translates_provider_errors(mock_completion):
+    mock_completion.side_effect = litellm.exceptions.AuthenticationError(
+        message="invalid api key", llm_provider="anthropic", model="claude-3-5-sonnet-20241022"
+    )
+    provider = LiteLLMProvider(model="claude-3-5-sonnet-20241022")
+
+    with pytest.raises(ProviderAuthError):
+        provider.complete_with_tools([Message(role="user", content="hi")], [])
+
+
+def test_sample_n_propagates_a_translated_provider_error(mock_completion):
+    mock_completion.side_effect = litellm.exceptions.RateLimitError(
+        message="too many requests", llm_provider="anthropic", model="gpt-4o"
+    )
+    provider = LiteLLMProvider(model="gpt-4o")
+
+    with pytest.raises(ProviderRateLimitError):
+        provider.sample_n([Message(role="user", content="hi")], 2)

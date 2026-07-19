@@ -26,7 +26,9 @@ class HashingEmbedder(Embedder):
         self._dim = dim
 
     def _bucket(self, token: str) -> int:
-        digest = hashlib.sha1(token.encode("utf-8")).digest()
+        # Bucket assignment only, not a security use of the hash — silences
+        # bandit's B324 without changing the digest or the buckets it maps to.
+        digest = hashlib.sha1(token.encode("utf-8"), usedforsecurity=False).digest()
         return int.from_bytes(digest[:4], "big") % self._dim
 
     def embed(self, texts: list[str]) -> list[list[float]]:

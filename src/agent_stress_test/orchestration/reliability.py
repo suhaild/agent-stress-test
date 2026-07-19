@@ -45,6 +45,17 @@ Phase C6 adds ``near_miss_ranking`` — not a scoring model, just a read of the
 same nodes/verdicts through C5's ``graded_proximity`` lens, surfaced by both
 report surfaces (``report/terminal.py``, the dashboard) alongside the
 confirmed failures.
+
+Beyond the phase plan: ``apply_mandatory_minimum_cap`` caps the compounded
+score whenever a run contains at least one critical failure, regardless of
+how thinly that failure dilutes across an otherwise-large or deep tree — a
+lone critical violation is disqualifying on its own, not just one bad step
+among many, so ``SeverityWeightedModel``'s averaging shouldn't be allowed to
+hide it behind a high score. Applied as its own post-processing pass inside
+``score_run`` (never inside a ``ScoringModel.evaluate``), deliberately kept
+separate from the per-model aggregation math above so the two concerns —
+how the raw rate is computed, vs. whether a critical failure caps the
+ceiling — stay independently readable and testable.
 """
 
 from abc import ABC, abstractmethod
@@ -246,6 +257,32 @@ class ReliabilityReport:
     applicable: bool = True
 
 
+# A run with even one critical failure is capped at this ceiling, however
+# high the severity-weighted average would otherwise land — see
+# apply_mandatory_minimum_cap. Comfortably inside report/dashboard's own
+# "fail" color threshold (< 0.4, see reliability_gauge.html), so a capped
+# score always renders as unambiguously bad, not a borderline "warn".
+CRITICAL_FAILURE_SCORE_CAP = 0.3
+
+
+def apply_mandatory_minimum_cap(
+    score: float,
+    severity_breakdown: dict[Severity, int],
+    *,
+    cap: float = CRITICAL_FAILURE_SCORE_CAP,
+) -> float:
+    """Cap ``score`` at ``cap`` when ``severity_breakdown`` shows at least one
+    critical failure — a pure post-processing pass (see the module
+    docstring). Never raises a score, only ever lowers it: a run whose raw
+    score already sits at or below ``cap`` (e.g. one where nearly every step
+    failed) is returned unchanged, since ``min(score, cap)`` is a no-op once
+    ``score <= cap``.
+    """
+    if severity_breakdown.get("critical", 0) > 0:
+        return min(score, cap)
+    return score
+
+
 def score_run(
     nodes: list[Node], verdicts: list[Verdict], *, model: ScoringModel | None = None
 ) -> ReliabilityReport:
@@ -256,11 +293,17 @@ def score_run(
     run's headline score now weighs failures by severity rather than
     counting them flat. Pass ``model=UnweightedFailureModel()`` for the
     original flat-count number instead.
+
+    Whatever the model, the resulting score is then passed through
+    ``apply_mandatory_minimum_cap`` — a run with any critical failure never
+    reports higher than ``CRITICAL_FAILURE_SCORE_CAP``, regardless of how
+    the chosen model weighed it.
     """
     resolved_model = model if model is not None else SeverityWeightedModel()
     result = resolved_model.evaluate(nodes, verdicts)
     conversation_depth = average_conversation_depth(nodes)
     score = (1.0 - _clamp01(result.per_step_failure_rate)) ** conversation_depth
+    score = apply_mandatory_minimum_cap(score, result.severity_breakdown)
 
     return ReliabilityReport(
         score=score,

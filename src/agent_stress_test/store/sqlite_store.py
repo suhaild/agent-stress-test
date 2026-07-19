@@ -85,16 +85,19 @@ class SqliteStore(Store):
     # --- internal helpers ------------------------------------------------
 
     def _upsert(self, table: str, columns: tuple[str, ...], values: tuple[str, ...]) -> None:
+        # table/columns are always literals from this class's own call sites below,
+        # never external input.
         placeholders = ", ".join("?" for _ in columns)
         self._conn.execute(
-            f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+            f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",  # nosec B608
             values,
         )
         self._conn.commit()
 
     def _load_many(self, table: str, run_id: str) -> list[str]:
+        # table is always a literal from this class's own call sites, never external input.
         rows = self._conn.execute(
-            f"SELECT data FROM {table} WHERE run_id = ? ORDER BY rowid",
+            f"SELECT data FROM {table} WHERE run_id = ? ORDER BY rowid",  # nosec B608
             (run_id,),
         ).fetchall()
         return [row[0] for row in rows]

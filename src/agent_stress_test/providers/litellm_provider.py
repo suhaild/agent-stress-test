@@ -1,6 +1,10 @@
 """litellm-backed LLMProvider (Claude + OpenAI via one call).
 
-This is the only module in the codebase allowed to import litellm.
+This is the only module in the codebase allowed to import litellm — including
+its exceptions: every provider-raised error is translated (see
+``_classify_error``) into ``ports.ProviderError`` and its subclasses before
+crossing back out of this module, so callers never need to import or
+pattern-match litellm's own exception types.
 """
 
 import json
@@ -9,11 +13,56 @@ from concurrent.futures import ThreadPoolExecutor
 import litellm
 
 from agent_stress_test.models import Message, ToolCall
-from agent_stress_test.ports import LLMProvider
+from agent_stress_test.ports import (
+    LLMProvider,
+    ProviderAuthError,
+    ProviderConnectionError,
+    ProviderError,
+    ProviderRateLimitError,
+    ProviderTimeoutError,
+)
 
 # Cap on concurrent in-flight requests for sample_n, independent of n itself,
 # so a large --sample-n doesn't fan out an unbounded burst of requests.
 _MAX_SAMPLE_WORKERS = 5
+
+# litellm.exceptions subclasses openai's hierarchy, one-to-one per provider,
+# so this maps by exception *type* rather than by (provider, status code) --
+# stable across whichever of Claude/OpenAI/etc. actually raised it.
+_AUTH_ERRORS = (litellm.exceptions.AuthenticationError, litellm.exceptions.PermissionDeniedError)
+_RATE_LIMIT_ERRORS = (litellm.exceptions.RateLimitError,)
+_TIMEOUT_ERRORS = (litellm.exceptions.Timeout,)
+_CONNECTION_ERRORS = (
+    litellm.exceptions.APIConnectionError,
+    litellm.exceptions.ServiceUnavailableError,
+    litellm.exceptions.InternalServerError,
+    litellm.exceptions.BadGatewayError,
+)
+
+
+def _classify_error(model: str, exc: Exception) -> ProviderError:
+    """Translate a raw litellm/provider-SDK exception into this codebase's
+    own ``ProviderError`` hierarchy, with a friendly, human-readable message
+    — so a caller (CLI, dashboard) never has to import litellm or pattern-
+    match a raw stack trace to know what went wrong or whether retrying
+    could help."""
+    if isinstance(exc, _AUTH_ERRORS):
+        return ProviderAuthError(
+            f"Authentication failed for model '{model}' — check the provider API key in your .env."
+        )
+    if isinstance(exc, _RATE_LIMIT_ERRORS):
+        return ProviderRateLimitError(
+            f"Rate limited by the provider for model '{model}' — retry after a pause, "
+            "or reduce concurrency (e.g. --sample-n)."
+        )
+    if isinstance(exc, _TIMEOUT_ERRORS):
+        return ProviderTimeoutError(f"Request to model '{model}' timed out.")
+    if isinstance(exc, _CONNECTION_ERRORS):
+        return ProviderConnectionError(
+            f"Could not reach the provider for model '{model}' — check network connectivity "
+            "and the provider's status."
+        )
+    return ProviderError(f"Provider error for model '{model}': {exc}")
 
 
 def _to_litellm_message(message: Message) -> dict:
@@ -58,11 +107,18 @@ class LiteLLMProvider(LLMProvider):
         )
 
     def complete(self, messages: list[Message]) -> str:
-        response = litellm.completion(
-            model=self._model,
-            messages=[_to_litellm_message(m) for m in messages],
-            **self._default_kwargs,
-        )
+        try:
+            response = litellm.completion(
+                model=self._model,
+                messages=[_to_litellm_message(m) for m in messages],
+                **self._default_kwargs,
+            )
+        except Exception as exc:
+            # Scoped to just the litellm.completion() call above — every
+            # litellm.exceptions.* class litellm actually raises here (verified:
+            # they subclass openai's exception hierarchy, not a single litellm
+            # base), so a narrower except clause would miss some of them.
+            raise _classify_error(self._model, exc) from exc
         self._record_usage(response)
         return response.choices[0].message.content
 
@@ -83,12 +139,19 @@ class LiteLLMProvider(LLMProvider):
         ``ToolCall``s litellm's unified response reports — used by
         ``ProviderAgent`` (unlike ``SampleAgent``, which narrates tool use as
         parsed plain text instead)."""
-        response = litellm.completion(
-            model=self._model,
-            messages=[_to_litellm_message(m) for m in messages],
-            tools=tools,
-            **self._default_kwargs,
-        )
+        try:
+            response = litellm.completion(
+                model=self._model,
+                messages=[_to_litellm_message(m) for m in messages],
+                tools=tools,
+                **self._default_kwargs,
+            )
+        except Exception as exc:
+            # Scoped to just the litellm.completion() call above — every
+            # litellm.exceptions.* class litellm actually raises here (verified:
+            # they subclass openai's exception hierarchy, not a single litellm
+            # base), so a narrower except clause would miss some of them.
+            raise _classify_error(self._model, exc) from exc
         self._record_usage(response)
         message = response.choices[0].message
         tool_calls = [

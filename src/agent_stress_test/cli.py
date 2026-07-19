@@ -32,6 +32,7 @@ from agent_stress_test.composition import (
 )
 from agent_stress_test.config import load_agent_spec, load_settings
 from agent_stress_test.orchestration.runner import build_runner
+from agent_stress_test.ports import ProviderError
 from agent_stress_test.report.terminal import render_full_report
 from agent_stress_test.store.migrations import ensure_current_or_raise
 from agent_stress_test.store.sqlite_store import SqliteStore
@@ -180,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         ensure_current_or_raise(args.db)
         return args.func(args, console)
-    except ValueError as exc:
+    except (ValueError, ProviderError) as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         return 1
 

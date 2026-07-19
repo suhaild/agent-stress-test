@@ -32,6 +32,7 @@ dependencies = [
 dev = [
     "pytest",
     "ruff",
+    "bandit",
 ]
 
 [project.scripts]
@@ -46,3 +47,9 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 src = ["src"]
+
+[tool.bandit]
+# Adapters (targets/, store/) that intentionally run subprocesses or build SQL
+# from internal-only table-name literals justify each finding inline with
+# `# nosec <ID>` rather than being blanket-excluded here.
+exclude_dirs = ["tests"]

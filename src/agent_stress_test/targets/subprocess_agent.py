@@ -1,7 +1,7 @@
 """Bring-your-own: wrap a subprocess as a TargetAgent via stdin/stdout JSON framing."""
 
 import json
-import subprocess
+import subprocess  # nosec B404 - this adapter's purpose is running a user-configured local command
 
 from agent_stress_test.models import AgentResponse, Message
 from agent_stress_test.ports import TargetAgent
@@ -31,7 +31,9 @@ class SubprocessAgent(TargetAgent):
         self._cwd = cwd
 
     def respond(self, conversation: list[Message]) -> AgentResponse:
-        result = subprocess.run(
+        # command is caller-configured (trusted local AgentSpec target config, not
+        # remote/untrusted input) and shell=False (the default) is used throughout.
+        result = subprocess.run(  # nosec B603
             self._command,
             input=json.dumps(_build_wire_payload(conversation)),
             capture_output=True,

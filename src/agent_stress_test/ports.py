@@ -68,6 +68,45 @@ class UsageMeter:
             )
 
 
+class ProviderError(Exception):
+    """Base for errors an ``LLMProvider`` raises out of ``complete()``/
+    ``sample_n()``/``complete_with_tools()`` — carries a human-readable
+    message plus a ``retryable`` flag, so a caller (CLI, dashboard) can
+    react sensibly without importing or inspecting a raw provider SDK
+    exception (e.g. litellm's, which ``LiteLLMProvider`` translates into
+    this hierarchy — see ``providers/litellm_provider.py``'s
+    ``_classify_error``). ``retryable=False`` here since an unclassified
+    provider error is treated as fatal by default; the specific subclasses
+    below override it where retrying is actually sensible.
+    """
+
+    retryable: bool = False
+
+
+class ProviderAuthError(ProviderError):
+    """Bad/missing API key, or the key lacks access to the model. Fatal —
+    retrying the exact same request can't succeed."""
+
+
+class ProviderRateLimitError(ProviderError):
+    """The provider is throttling this key/model. Retryable after a pause."""
+
+    retryable = True
+
+
+class ProviderTimeoutError(ProviderError):
+    """The request didn't complete in time. Retryable."""
+
+    retryable = True
+
+
+class ProviderConnectionError(ProviderError):
+    """Couldn't reach the provider (network, DNS, or the provider's own
+    infrastructure being down). Retryable."""
+
+    retryable = True
+
+
 class LLMProvider(ABC):
     """A source of LLM completions. Real impl wraps litellm; fake impl is deterministic."""
 

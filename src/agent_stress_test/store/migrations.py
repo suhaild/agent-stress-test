@@ -94,7 +94,8 @@ def _existing_tables(conn: sqlite3.Connection) -> dict[str, type[BaseModel]]:
 
 
 def _rows(conn: sqlite3.Connection, table: str) -> list[tuple[str, str]]:
-    return conn.execute(f"SELECT id, data FROM {table}").fetchall()
+    # table is always a key from _TABLES_TO_MODELS, never external input.
+    return conn.execute(f"SELECT id, data FROM {table}").fetchall()  # nosec B608
 
 
 def _all_rows_parse(conn: sqlite3.Connection) -> bool:
@@ -155,7 +156,8 @@ def migrate(db_path: str | Path) -> None:
             for row_id, data in _rows(conn, table):
                 upgraded = model.model_validate_json(data)
                 conn.execute(
-                    f"UPDATE {table} SET data = ? WHERE id = ?",
+                    # table is always a key from _TABLES_TO_MODELS, never external input.
+                    f"UPDATE {table} SET data = ? WHERE id = ?",  # nosec B608
                     (upgraded.model_dump_json(), row_id),
                 )
         conn.commit()
