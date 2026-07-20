@@ -1,12 +1,7 @@
 """Bring-your-own: a native tool-calling TargetAgent driven by a bare model id.
 
-Unlike ``SampleAgent`` (which narrates ReAct-style reasoning as plain text
-and parses it back out), this issues the AgentSpec's tools to the model
-through a provider's native tool-calling interface
-(``ports.ToolCallingLLM.complete_with_tools`` — ``LiteLLMProvider`` is the
-only implementation today) and records genuine ``ToolCall`` structures —
-useful for stress-testing how a target behaves with real tool_use content
-blocks, not a text-parsed simulation of them.
+Unlike SampleAgent, issues tools via the provider's native tool-calling
+interface (``ToolCallingLLM.complete_with_tools``) and records real ToolCalls.
 """
 
 from agent_stress_test.models import (
@@ -21,20 +16,12 @@ from agent_stress_test.models import (
 from agent_stress_test.ports import TargetAgent, ToolCallingLLM
 from agent_stress_test.targets.prompt_rendering import _render_system_prompt
 
-# No tool declared on an AgentSpec has a real backend here (ToolSpec only
-# ever carries a name/description, never an implementation - see models.py),
-# so every tool_use is resolved with this fixed stub result instead of
-# actually executing anything.
+# ToolSpec carries no execution backend, so every tool_use gets this fixed stub.
 _STUB_TOOL_RESULT = "[no execution backend configured for this tool in this stress test]"
 
 
 def _tool_schemas(agent_spec: AgentSpec) -> list[dict]:
-    """AgentSpec.tools translated to litellm/OpenAI's native tool-schema shape.
-
-    Every tool is declared as accepting an open object, since ToolSpec never
-    carries a parameters JSON schema — the same assumption SampleAgent's
-    system-prompt narration already makes about what tools can take.
-    """
+    """AgentSpec.tools as litellm/OpenAI native tool schemas (open object params — ToolSpec has no JSON schema)."""
     return [
         {
             "type": "function",
@@ -49,14 +36,7 @@ def _tool_schemas(agent_spec: AgentSpec) -> list[dict]:
 
 
 class ProviderAgent(TargetAgent):
-    """Wraps a ``ToolCallingLLM`` (in practice, a bare model id via
-    ``LiteLLMProvider``) as a TargetAgent.
-
-    Bounded by ``max_tool_rounds`` so a model that keeps calling tools can
-    never loop forever — each round resolves every pending tool_use with the
-    fixed stub result and asks the model once more, until it replies with no
-    further tool calls or the round limit is hit.
-    """
+    """Wraps a ``ToolCallingLLM`` as a TargetAgent, bounded by ``max_tool_rounds``."""
 
     def __init__(
         self, provider: ToolCallingLLM, agent_spec: AgentSpec, *, max_tool_rounds: int = 3

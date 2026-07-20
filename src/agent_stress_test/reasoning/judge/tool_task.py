@@ -1,6 +1,6 @@
-"""Phase C: node-level tool/task metric judges (DeepEval's
-``ArgumentCorrectnessMetric``/``TaskCompletionMetric``), plus ``CompositeJudge``
-to run several node-level judges over the same node and concatenate verdicts.
+"""Node-level tool/task metric judges (DeepEval's ``ArgumentCorrectnessMetric``
+/``TaskCompletionMetric``), plus ``CompositeJudge`` to run several node-level
+judges over the same node and concatenate verdicts.
 """
 
 from deepeval.metrics import ArgumentCorrectnessMetric, TaskCompletionMetric
@@ -16,10 +16,8 @@ from agent_stress_test.reasoning.judge.base import Judge, _confidence_from_score
 
 
 def _last_user_input(conversation: list[Message] | None) -> str:
-    """The most recent user-message text in ``conversation`` (the request a
-    metric judges the reply/tool-calls against), or ``""`` if none is
-    available — DeepEval's node metrics accept an empty ``input`` (it only
-    degrades judgment quality, never crashes; see judge tests)."""
+    """The most recent user-message text in ``conversation``, or ``""`` if
+    none is available (DeepEval's node metrics accept an empty ``input``)."""
     if not conversation:
         return ""
     for message in reversed(conversation):
@@ -39,9 +37,9 @@ def _metric_test_case(response: AgentResponse, conversation: list[Message] | Non
 def _measure_node_metric(
     metric, test_case: LLMTestCase, *, run_id: str, node_id: str, scope: str, label: str
 ) -> Verdict:
-    """Shared measure/verdict-building step both node-level metric judges
-    below use — same conservative-pass-on-malformed-output contract as the
-    conversation-level metrics (``_measure_conversation_metric``)."""
+    """Shared measure/verdict-building step for both node-level metric judges;
+    same conservative-pass-on-malformed-output contract as the conversation
+    metrics."""
     try:
         metric.measure(test_case, _show_indicator=False)
         passed, reason, confidence, severity = (
@@ -72,15 +70,12 @@ def _measure_node_metric(
 
 class ToolArgumentJudge(Judge):
     """Node-level judge: DeepEval's ``ArgumentCorrectnessMetric`` over the
-    node's structured tool calls (Phase C1).
+    node's structured tool calls.
 
-    Emits a single ``scope="tool"`` verdict (rendered inline with the node's
-    tool-call block, not as a generic rule verdict), and only for nodes that
-    actually made tool calls — a node with none has nothing to judge, so it
-    gets no verdict rather than a vacuous pass. ``NO expected_tools`` is used
-    (that needs a known-good tool set — Phase E's regression replay); this
-    judges whether the arguments the agent chose fit the request it was
-    given.
+    Emits a single ``scope="tool"`` verdict, only for nodes that actually
+    made tool calls — a node with none gets no verdict rather than a vacuous
+    pass. Judges whether the arguments fit the request, not against a
+    known-good expected-tools set.
     """
 
     def __init__(self, llm: LLMProvider) -> None:
@@ -112,17 +107,12 @@ class ToolArgumentJudge(Judge):
 
 
 class TaskCompletionJudge(Judge):
-    """Node-level judge: DeepEval's referenceless ``TaskCompletionMetric``
-    (Phase C1) — did the reply actually accomplish what the user asked?
+    """Node-level judge: DeepEval's referenceless ``TaskCompletionMetric`` —
+    did the reply actually accomplish what the user asked?
 
-    Emits one ``scope="task"`` verdict per node. Referenceless (no
-    ``expected_output``), which fits open-ended adversarial exploration where
-    there's no gold answer to compare against. Off by default in the live run
-    (see ``build_runner``): it costs 2 LLM calls per node regardless of tool
-    use — confirmed cheap in isolation (~$0.002/node on Haiku) by Phase C3's
-    real measurement, but still the only per-node metric with no cheap
-    early-out, so it stays opt-in rather than compounding with every node
-    a run creates.
+    Emits one ``scope="task"`` verdict per node, unconditionally (unlike
+    ``ToolArgumentJudge`` there's no cheap early-out), so it stays opt-in
+    rather than compounding with every node a run creates.
     """
 
     def __init__(self, llm: LLMProvider) -> None:

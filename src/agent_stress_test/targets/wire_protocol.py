@@ -1,8 +1,5 @@
-"""The shared `{"messages": [...]} -> {"reply": ..., "trace": [...]}` JSON
-codec used by every bring-your-own ``TargetAgent`` that talks to an external
-process over some wire (HTTP, stdin/stdout) — the transport differs per
-adapter, this codec doesn't.
-"""
+"""Shared `{"messages": [...]} -> {"reply": ..., "trace": [...]}` JSON codec
+for every bring-your-own TargetAgent that talks over a wire (HTTP, stdin/stdout)."""
 
 from agent_stress_test.models import AgentResponse, Message, Step
 

@@ -1,13 +1,9 @@
-"""Multi-format report export (Phase RE4): one shared ``ReportBundle`` that
-the CLI's ``--format json``/``--format markdown`` and the dashboard's export
-routes both render from — reusing the exact same ``executive_summary_context``/
-``ranked_clusters``/``conversation_verdicts_by_leaf`` helpers the Rich
-terminal report and the HTML dashboard already call (``report/shared.py``),
-so every surface presents the same numbers, never a re-derivation with its
-own drift risk.
+"""Multi-format report export: one shared ``ReportBundle`` that the CLI's
+JSON/Markdown export and the dashboard's export routes both render from, so
+every surface presents the same numbers.
 
-Pure presentation, same isolation contract as ``report/terminal.py``: nothing
-here talks to a ``Store``, a provider, or the filesystem.
+Pure presentation: nothing here talks to a ``Store``, a provider, or the
+filesystem.
 """
 
 import json
@@ -50,9 +46,8 @@ class ReportBundle:
 def build_report_bundle(
     run: Run, tree: ConversationTree, verdicts: list[Verdict], clusters: list[Cluster]
 ) -> ReportBundle:
-    """Compute a run's full report once — every export format (and the CLI's
-    Rich report, via ``terminal.py`` calling the same ``report/shared.py``
-    helpers directly) derives from identical inputs."""
+    """Compute a run's full report once; every export format derives from
+    identical inputs."""
     reliability = score_run(tree.nodes(), verdicts)
     near_misses = near_miss_ranking(tree.nodes(), verdicts)
     exec_ctx = executive_summary_context(tree.nodes(), verdicts, clusters, reliability, near_misses)
@@ -72,9 +67,8 @@ def build_report_bundle(
 
 
 def to_json_dict(bundle: ReportBundle) -> dict:
-    """A fully JSON-safe dict — Pydantic models via ``model_dump(mode="json")``,
-    the plain dataclasses (``ReliabilityReport``, ``NearMiss``, ``RuleCoverage``,
-    ``RunSummary``, ``FixFirstItem``) via ``dataclasses.asdict``."""
+    """A fully JSON-safe dict: Pydantic models via ``model_dump``, plain
+    dataclasses via ``dataclasses.asdict``."""
     return {
         "run": bundle.run.model_dump(mode="json"),
         "reliability": asdict(bundle.reliability),

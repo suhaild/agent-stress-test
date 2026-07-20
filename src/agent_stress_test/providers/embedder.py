@@ -1,11 +1,8 @@
-"""Deterministic, offline text embedder for failure clustering.
+"""Offline bag-of-hashed-tokens text embedder for failure clustering.
 
-A bag-of-hashed-tokens embedding: each token is hashed into one of a fixed
-number of buckets, counts are accumulated, and the vector is L2-normalized.
-Lexically similar texts land on overlapping buckets and so have high cosine
-similarity. It needs no model download and no network, so it backs both the
-tests and the default clustering path; a semantic embedder (provider or local
-model) can replace it behind the ``Embedder`` port without touching callers.
+Tokens hash into fixed buckets and the resulting vector is L2-normalized, so
+lexically similar texts land on overlapping buckets and get high cosine
+similarity — no model download or network needed.
 """
 
 import hashlib
@@ -18,16 +15,13 @@ _TOKEN = re.compile(r"[a-z0-9]+")
 
 
 class HashingEmbedder(Embedder):
-    """Hashing bag-of-words embedder (stdlib only, deterministic)."""
-
     def __init__(self, dim: int = 256) -> None:
         if dim < 1:
             raise ValueError("dim must be >= 1")
         self._dim = dim
 
     def _bucket(self, token: str) -> int:
-        # Bucket assignment only, not a security use of the hash — silences
-        # bandit's B324 without changing the digest or the buckets it maps to.
+        # usedforsecurity=False: bucket assignment only, silences bandit B324.
         digest = hashlib.sha1(token.encode("utf-8"), usedforsecurity=False).digest()
         return int.from_bytes(digest[:4], "big") % self._dim
 

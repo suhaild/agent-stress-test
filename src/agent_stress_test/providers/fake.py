@@ -9,10 +9,9 @@ from agent_stress_test.ports import LLMProvider
 class FakeLLMProvider(LLMProvider):
     """Deterministic, no-network LLMProvider for tests.
 
-    With no `responses` given, replies are a pure function of the last message's
-    content (same input on a fresh instance always yields the same output). With
-    `responses` given, they're returned in order; `cycle=True` wraps around once
-    exhausted instead of raising.
+    With no `responses`, replies are a pure function of the last message's
+    content. With `responses`, they're returned in order; `cycle=True` wraps
+    around instead of raising once exhausted.
     """
 
     def __init__(
@@ -28,8 +27,7 @@ class FakeLLMProvider(LLMProvider):
         self._default_reply_prefix = default_reply_prefix
         self._next_index = 0
         self.calls: list[list[Message]] = []
-        # Guards `_next_index`/`calls` so the fake stays correct when called
-        # concurrently (the orchestration layer runs tactic branches in parallel).
+        # Guards state — callers run tactic branches concurrently.
         self._lock = threading.Lock()
 
     def complete(self, messages: list[Message]) -> str:
@@ -45,10 +43,7 @@ class FakeLLMProvider(LLMProvider):
             else:
                 last_content = messages[-1].content if messages else ""
                 reply = f"{self._default_reply_prefix}{last_content}"
-        # No real API call was made, so there's no real token count to report
-        # either — a plain word count is a deterministic, offline stand-in,
-        # good enough to prove the metering plumbing works end to end. Cost
-        # is always 0.0: nothing was actually billed.
+        # No real call was made: word count stands in for token count, cost is 0.0.
         prompt_tokens = sum(len(m.content.split()) for m in messages if isinstance(m.content, str))
         completion_tokens = len(reply.split())
         self.meter.record(

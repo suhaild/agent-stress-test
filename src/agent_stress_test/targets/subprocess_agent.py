@@ -11,12 +11,8 @@ from agent_stress_test.targets.wire_protocol import _build_wire_payload, _parse_
 class SubprocessAgent(TargetAgent):
     """Wraps a command-line process as a TargetAgent.
 
-    Spawns ``command`` fresh for each ``respond()`` call — the same
-    stateless request/response contract ``HttpAgent`` uses (the conversation
-    tree already owns the full history, so nothing needs to persist between
-    turns) — writing ``{"messages": [...]}`` as JSON to stdin and reading one
-    JSON object ``{"reply": "...", "trace": [...]}`` back from stdout. A
-    missing or null ``trace`` is returned as ``trace=None``, never fabricated.
+    Spawns ``command`` fresh per ``respond()`` call (stateless, like HttpAgent):
+    writes ``{"messages": [...]}`` to stdin, reads ``{"reply": ..., "trace": [...]}`` from stdout.
     """
 
     def __init__(
@@ -31,9 +27,7 @@ class SubprocessAgent(TargetAgent):
         self._cwd = cwd
 
     def respond(self, conversation: list[Message]) -> AgentResponse:
-        # command is caller-configured (trusted local AgentSpec target config, not
-        # remote/untrusted input) and shell=False (the default) is used throughout.
-        result = subprocess.run(  # nosec B603
+        result = subprocess.run(  # nosec B603 - command is trusted local config, shell=False
             self._command,
             input=json.dumps(_build_wire_payload(conversation)),
             capture_output=True,

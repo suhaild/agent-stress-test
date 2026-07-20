@@ -7,28 +7,18 @@ from agent_stress_test.ports import LLMProvider
 from agent_stress_test.reasoning.judge.base import Judge, judge_rule_with_llm
 from agent_stress_test.reasoning.judge.rules import RulesJudge, build_checks
 
-# check_types whose tier-1 failure is only a proximity/keyword trigger, with
-# no sense of whether the topic was genuinely being discussed (as opposed to,
-# say, a preliminary "let me check on that" before anything is actually
-# decided) -- see RequiredDisclaimerCheck's docstring. The other check types
-# (banned tool use, forbidden output, format, ungrounded claim) are all
-# present-or-absent facts about the reply/trace with nothing to disambiguate,
-# so a tier-1 failure there stands on its own.
+# required_disclaimer's tier-1 check is only a proximity/keyword trigger and
+# can fire before the topic is genuinely being discussed, so it alone gets a
+# second opinion from tier 2 rather than standing on its own.
 _TRIGGER_ONLY_CHECK_TYPES = {"required_disclaimer"}
 
 
 class LLMJudge(Judge):
     """Tier-2 interpretive judge: one LLM call per rule, judged against the
-    reply alone (no conversation history — tier 1 reasons the same way).
+    reply alone (no conversation history).
 
-    Each rule is judged via ``judge_rule_with_llm`` (see its own docstring
-    for why this is a hand-rolled structured call rather than a DeepEval
-    GEval metric): the model decides applicability and compliance together
-    in one call, so a rule whose subject matter never came up in this reply
-    is ``passed=True, applicable=False`` instead of either a false failure
-    or a rule wrongly credited as "tested and held up" (see ``Verdict``'s
-    own docstring on ``applicable``, and ``rule_coverage``, which reads it).
-    Severity stays config-driven, read from the rule so it matches tier 1.
+    A rule whose subject matter never came up is ``passed=True,
+    applicable=False`` rather than a false failure or a false pass.
     """
 
     def __init__(self, llm: LLMProvider, agent_spec: AgentSpec) -> None:
@@ -70,15 +60,9 @@ class LLMJudge(Judge):
 class TwoTierJudge(Judge):
     """Runs tier 1 first; escalates to tier 2 only when tier 1 does not fire.
 
-    If any deterministic check fails, those verdicts decide, EXCEPT for a
-    failure from a ``_TRIGGER_ONLY_CHECK_TYPES`` check (currently just
-    ``required_disclaimer``): that one specific failing verdict gets a second
-    opinion from the tier-2 judge before being finalized, since its trigger
-    can fire on a reply that merely gestures at the topic (e.g. "let me check
-    your return eligibility") rather than actually discussing it. This costs
-    one extra LLM call only on the rare node where that trigger already
-    fired -- every clean reply still costs nothing extra. If tier 1 is fully
-    clean, the LLM judge evaluates the reply against every rule as before.
+    A tier-1 failure decides the verdict, except a ``_TRIGGER_ONLY_CHECK_TYPES``
+    failure, which gets a tier-2 second opinion before being finalized. If
+    tier 1 is fully clean, tier 2 evaluates the reply against every rule.
     """
 
     def __init__(

@@ -1,18 +1,8 @@
 """CLI/terminal report — a colorful Rich rendering of a completed run.
 
-Pure presentation: every function here takes already-loaded domain objects
-(``Run``, ``ReliabilityReport``, ``Cluster``s, a ``ConversationTree``,
-``Verdict``s) plus an injectable ``rich.console.Console``. Nothing here talks
-to a ``Store``, a provider, or the filesystem — that keeps it trivially
-testable (render to a recording console and assert on the text) and keeps the
-hexagonal boundary intact (no ``litellm``, ``httpx``, or ``sqlite3`` here).
-
-The dashboard is the one real front end (every control and report surface
-lives there); this module's only remaining caller is ``cli.py``'s ``run``
-command, which prints a report after a scripted/no-browser run. The
-report/replay/regression/remediation/profile renderers that used to live
-here were retired along with their now-removed CLI commands — the dashboard
-covers all of that with no CLI-only functionality left behind.
+Pure presentation: every function takes already-loaded domain objects plus
+an injectable ``rich.console.Console``. Nothing here talks to a ``Store``, a
+provider, or the filesystem.
 """
 
 from rich.console import Console
@@ -52,18 +42,9 @@ _SEVERITY_ORDER = ("critical", "major", "minor")
 
 
 def _severity_mix_bar(breakdown: dict[str, int]) -> Text:
-    """A stacked bar (plain ASCII characters, no charting library — see Phase
-    C6's "SVG if no chart lib has landed" fallback, translated to Rich's
-    text-only surface) proportional to each severity's share of the failing
-    steps. Empty (no bar at all) when nothing failed.
-
-    Deliberately ``#``, not a Unicode block character (``█``): a real
-    ``Console()`` bound to a legacy Windows console (codepage cp1252, not
-    UTF-8) raises ``UnicodeEncodeError`` trying to write one — caught live by
-    actually running ``agent-stress-test run`` on Windows, not just the
-    recorded-console tests (``Console(record=True)`` never touches the real
-    OS console API, so it can't catch this class of bug).
-    """
+    """A stacked bar proportional to each severity's share of failing steps.
+    Uses ``#``, not a Unicode block char: a legacy Windows console (cp1252)
+    raises ``UnicodeEncodeError`` on ``█``."""
     total = sum(breakdown.values())
     bar = Text()
     if not total:
@@ -144,14 +125,10 @@ def _print_turn(console: Console, role: str, content: str) -> None:
 
 
 def _print_assistant_turn(console: Console, node: Node) -> None:
-    """The assistant's reply, plus its instability badge (Phase C6 — the
-    field has been populated since Phase 5 but was never rendered anywhere;
-    styled by ``_score_style`` on ``1 - instability`` so a shaky reply reads
-    red, same color language as the reliability score).
-    """
+    """The assistant's reply, plus its instability badge."""
     line = Text("assistant: ", style=_ROLE_STYLE.get("assistant", "")) + Text(node.target_reply)
     if node.instability_score is not None:
-        style = _score_style(1.0 - node.instability_score)
+        style = _score_style(1.0 - node.instability_score)  # invert: high instability -> red
         line.append(f"  [instability: {node.instability_score:.0%}]", style=style)
     console.print(line)
 
@@ -175,9 +152,8 @@ def render_transcript(
         _print_assistant_turn(console, node)
 
     node_failures = [v for v in verdicts if v.node_id == node_id and not v.passed]
-    # Tool-scoped metric verdicts (Phase C) render as their own line, not as a
-    # generic rule panel — a tool-argument failure has no rule_id and would
-    # read as "rule: -" in the rule panel.
+    # Tool-scoped failures have no rule_id and would read as "rule: -" in the
+    # generic rule panel, so they get their own line instead.
     tool_failures = [v for v in node_failures if v.scope == "tool"]
     rule_failures = [v for v in node_failures if v.scope != "tool"]
 
@@ -205,8 +181,7 @@ def render_transcript(
 
 
 def render_near_misses(console: Console, near_misses: list[NearMiss]) -> None:
-    """Phase C6: the closest calls — passing nodes that came nearest to
-    failing (Phase C5's ``graded_proximity``), reported alongside the
+    """Passing nodes that came nearest to failing, surfaced alongside the
     confirmed failures instead of buried in the tree."""
     if not near_misses:
         console.print(
@@ -230,9 +205,8 @@ def render_near_misses(console: Console, near_misses: list[NearMiss]) -> None:
 def render_conversation_verdicts(
     console: Console, tree: ConversationTree, verdicts: list[Verdict]
 ) -> None:
-    """Phase C2/C6: whole-conversation metric verdicts (role adherence,
-    knowledge retention, ...), one table per persona chain — path-keyed by
-    its leaf node, distinct from any single turn's per-node rule verdict."""
+    """Whole-conversation metric verdicts (role adherence, knowledge
+    retention, ...), one table per persona chain."""
     grouped = conversation_verdicts_by_leaf(verdicts)
     if not grouped:
         return
@@ -271,10 +245,6 @@ _COVERAGE_STYLE = {
 
 
 def render_summary(console: Console, summary: RunSummary, fix_first: list[FixFirstItem]) -> None:
-    """Phase RE4: the executive summary panel (Phase RE2), brought to the
-    terminal report so the two surfaces don't drift — built from the exact
-    same ``executive_summary_context`` the dashboard calls (see
-    ``render_full_report`` below), never a re-derivation of its own."""
     console.print(Panel(summary.text, title="Executive Summary", border_style="cyan"))
     if not fix_first:
         return
@@ -301,8 +271,8 @@ def render_summary(console: Console, summary: RunSummary, fix_first: list[FixFir
 
 
 def render_rule_coverage(console: Console, coverage: list[RuleCoverage]) -> None:
-    """Phase RE3/RE4: every declared rule x pass/fail/near-miss/never-exercised
-    — a rule that never fired stays invisible without this, on either surface."""
+    """Every declared rule x pass/fail/near-miss/never-exercised, so a rule
+    that never fired still shows up."""
     if not coverage:
         return
     table = Table(title="Rule Coverage", show_lines=False)
@@ -331,13 +301,7 @@ def render_full_report(
 ) -> None:
     """The complete report: reliability, executive summary, ranked clusters,
     rule coverage, conversation-level verdicts, near misses, then one
-    transcript per cluster.
-
-    The executive summary and fix-this-first ranking are built via
-    ``executive_summary_context`` — the exact same helper
-    ``report/dashboard/server.py``/``live_events.py`` call — so the CLI and
-    the dashboard can never independently drift on those numbers (Phase RE4).
-    """
+    transcript per cluster."""
     near_misses = near_miss_ranking(tree.nodes(), verdicts)
     exec_ctx = executive_summary_context(tree.nodes(), verdicts, clusters, reliability, near_misses)
     render_reliability(console, run, reliability)

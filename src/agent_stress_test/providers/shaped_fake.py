@@ -1,30 +1,9 @@
-"""A schema-aware deterministic fake LLMProvider (for DeepEval-backed tests).
+"""Schema-aware fake LLMProvider for DeepEval-backed tests.
 
-The plain ``FakeLLMProvider`` (``providers/fake.py``) always returns
-"fake-reply: ..." — never valid JSON — so any DeepEval metric that calls
-``LLMProviderAsDeepEvalLLM.generate(prompt, schema=SomeSchema)`` and then
-``SomeSchema.model_validate_json(text)`` crashes immediately (GAP 1). This
-fake recognizes the schema the shim embedded in the prompt (see
-``reasoning/deepeval_bridge.py``'s ``SCHEMA_MARKER``) and fabricates a
-plausible, schema-valid JSON object instead — every DeepEval schema this
-codebase constructs through it must produce a valid instance, never a crash.
-
-Fabrication rules, in priority order:
-  - a ``$ref``/``anyOf`` wrapper resolves to its target / first non-null
-    branch first
-  - an ``enum`` (a ``Literal[...]`` field) -> its first allowed value
-  - list fields -> ``[]`` (empty always validates — none of DeepEval's own
-    schemas set a ``min_length``, and this sidesteps ever having to
-    fabricate a nested item's own shape)
-  - bool fields are SEMANTICS-AWARE, not blindly ``True``: a field whose
-    name contains "complete"/"stop"/"end"/"refus"/"jailbroken" fabricates
-    ``False``, everything else ``True``. This is deliberate, not a guess —
-    an early spike fabricated every bool as ``True``, which made
-    ``deepeval.simulator.schema.ConversationCompletion.is_complete`` come
-    back ``True`` on the very first turn, ending every simulated
-    conversation at turn 0 before it could do anything.
-  - int/float fields -> ``7``
-  - anything else (plain strings, untyped fields) -> placeholder text
+Detects the ``SCHEMA_MARKER`` embedded in the prompt (see
+``reasoning/deepeval_bridge.py``) and fabricates a schema-valid JSON object
+instead of plain text, so DeepEval metrics that validate the reply against a
+Pydantic schema don't crash.
 """
 
 import json
@@ -52,6 +31,8 @@ def _fabricate_value(name: str, node: dict, defs: dict) -> Any:
     if node_type == "array":
         return []
     if node_type == "boolean":
+        # Defaults True, but "done"-like field names default False, or every
+        # fabricated reply would signal conversation-complete on turn 0.
         lowered = name.lower()
         return not any(marker in lowered for marker in _BOOL_FALSE_NAME_MARKERS)
     if node_type in ("integer", "number"):
@@ -69,18 +50,12 @@ def _fabricate_object(node: dict, defs: dict) -> dict:
 
 
 def fabricate_from_json_schema(json_schema: dict) -> dict:
-    """A plausible, schema-shaped dict for any Pydantic model's
-    ``model_json_schema()`` output — see the module docstring for the
-    fabrication rules."""
+    """A plausible, schema-valid dict for a Pydantic ``model_json_schema()`` output."""
     return _fabricate_object(json_schema, json_schema.get("$defs", {}))
 
 
 class ShapedFakeLLM(LLMProvider):
-    """Deterministic, schema-aware fake — the DeepEval-specific counterpart
-    to ``FakeLLMProvider``. Falls back to the same plain "fake-reply: ..."
-    behavior whenever no schema marker is present, so it's also a safe
-    drop-in for a non-schema call.
-    """
+    """Falls back to plain "fake-reply: ..." when no schema marker is present."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -96,8 +71,7 @@ class ShapedFakeLLM(LLMProvider):
             reply = json.dumps(fabricate_from_json_schema(json.loads(schema_json)))
         else:
             reply = f"fake-reply: {last_content}"
-        # No real API call was made — see FakeLLMProvider's identical
-        # word-count stand-in for why this is good enough offline.
+        # No real call was made: word count stands in for token count, cost is 0.0.
         prompt_tokens = sum(len(m.content.split()) for m in messages if isinstance(m.content, str))
         completion_tokens = len(reply.split())
         self.meter.record(

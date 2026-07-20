@@ -1,16 +1,11 @@
-"""Shared JSON-parsing helpers for every reasoning-layer component that asks
-an LLM to respond with a bare JSON object.
+"""Shared JSON-parsing helpers for reasoning-layer components that expect a
+bare JSON reply from an LLM.
 """
 
 import re
 
-# Real models routinely wrap their JSON output in a markdown code fence even
-# when told to respond with ONLY the JSON object (Claude does this reliably,
-# confirmed against a live model) — model_validate_json() can't parse the
-# fence's backticks, so it's stripped before validation rather than treated
-# as a parse failure. Every schema-constrained LLM call in this codebase
-# (the tier-2 judge, the profiler, remediation) funnels through this one
-# helper, so this is the single place that needs to handle it.
+# Models often wrap JSON output in a markdown code fence even when told not
+# to; strip it before validation rather than treat it as a parse failure.
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
 
 

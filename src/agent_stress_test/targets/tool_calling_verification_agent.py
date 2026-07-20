@@ -1,18 +1,5 @@
-"""A scripted target that emits a real, deliberately-wrong ToolCall.
-
-Verification target for Phase C's ArgumentCorrectnessMetric: the bundled
-SampleAgent only narrates tool use as free-text reasoning (a ``Step`` trace)
-and never populates ``AgentResponse.tool_calls``, so there's nothing for an
-argument-correctness judge to actually score against. This target performs
-the same "look up the order the customer mentioned" step a real tool-calling
-agent would, but always calls ``lookup_order`` with the WRONG order id — a
-deterministic corruption of whatever id the customer actually gave, not a
-random one, so a test can assert exactly what's wrong.
-
-Wired declaratively via
-``target: {kind: python, import_path: "agent_stress_test.targets.tool_calling_verification_agent:tool_calling_verification_agent"}``
-(see ``config/agents/examples/example_tool_calling_verification.yaml``).
-"""
+"""A scripted target that emits a real ToolCall with a deliberately, deterministically
+wrong order id — gives an argument-correctness judge something concrete to score against."""
 
 import re
 
@@ -23,7 +10,6 @@ _FALLBACK_ORDER_ID = "00000"
 
 
 def _wrong_order_id(real_order_id: str) -> str:
-    """A deterministically WRONG order id — never equal to ``real_order_id``."""
     digits = [int(d) for d in real_order_id]
     digits[-1] = (digits[-1] + 1) % 10
     return "".join(str(d) for d in digits)

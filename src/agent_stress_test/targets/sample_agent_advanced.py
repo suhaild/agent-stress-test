@@ -1,14 +1,5 @@
-"""The bundled ReAct-style demo agent's harder sibling.
-
-Same Thought/Action/Action Input/Observation/Final Answer narration format as
-``SampleAgent``, but every ``Action`` is executed for real against an
-in-memory fake tool backend (``tool_backends.py``) instead of the model
-inventing its own ``Observation`` — so a reply can genuinely contradict real
-tool output, giving grounding rules, near-miss scoring, and self-consistency
-real material to catch, not just "did the model narrate calling a tool."
-See ``config/agents/sample_support_advanced.yaml``, the spec that opts into
-this via ``target: {kind: sample_advanced}``.
-"""
+"""SampleAgent's harder sibling: executes each narrated Action for real against
+an in-memory fake tool backend instead of letting the model invent Observations."""
 
 from collections.abc import Callable
 from typing import Any
@@ -19,9 +10,7 @@ from agent_stress_test.targets.prompt_rendering import _render_system_prompt
 from agent_stress_test.targets.react_parsing import parse_react_step
 from agent_stress_test.targets.tool_backends import parse_action_input
 
-# Bounds the real tool-execution loop so a model that keeps calling tools (or
-# never produces a well-formed Action) can never run away — mirrors
-# ProviderAgent's identical `max_tool_rounds` bound on its native tool loop.
+# Bounds the loop so a model that keeps calling tools can never run away.
 _MAX_TOOL_STEPS = 4
 
 _CONTINUE_NUDGE = (
@@ -35,9 +24,8 @@ _CONCLUDE_NUDGE = (
 
 
 class AdvancedSampleAgent(TargetAgent):
-    """Like ``SampleAgent``, but loops: narrate one step, execute its Action
-    for real against ``tool_backend``, feed back the real Observation, and
-    repeat until a Final Answer or ``_MAX_TOOL_STEPS`` is reached."""
+    """Like ``SampleAgent``, but loops: narrate a step, execute its Action for real,
+    feed back the real Observation, repeat until Final Answer or ``_MAX_TOOL_STEPS``."""
 
     def __init__(
         self,
@@ -87,14 +75,8 @@ class AdvancedSampleAgent(TargetAgent):
                         output=observation,
                     )
                 )
-            # role="user", not "tool" -- this loop is free-text ReAct
-            # narration (Thought/Action/Observation), not the provider's
-            # native tool-calling protocol, so there's no tool_call_id to
-            # pair a "tool" message with. litellm's Anthropic transform
-            # requires one for any role="tool" message and raises without it
-            # (see ProviderAgent for the real native-tool-calling pairing,
-            # which does have one). Matches _CONTINUE_NUDGE/_CONCLUDE_NUDGE,
-            # which already feed follow-up text back as "user".
+            # role="user", not "tool": this is free-text narration with no tool_call_id,
+            # and litellm's Anthropic transform requires one for role="tool" messages.
             messages.append(Message(role="user", content=f"Observation: {observation}"))
 
         final_completion = self._llm.complete(

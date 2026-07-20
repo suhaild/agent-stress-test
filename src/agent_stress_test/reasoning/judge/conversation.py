@@ -1,10 +1,8 @@
-"""Phase C2: whole-conversation metric judges.
+"""Whole-conversation metric judges.
 
-A conversation-level judge scores a full root-to-leaf persona conversation
-(a ConversationalTestCase), not one node's AgentResponse — a different unit
-of judgment from ``Judge``, so it gets its own small interface
-(``ConversationMetricJudge``) rather than forcing it through
-``Judge.judge()``'s per-node shape.
+Scores a full root-to-leaf persona conversation (a ConversationalTestCase),
+a different unit of judgment from ``Judge``, so it gets its own small
+interface (``ConversationMetricJudge``) instead of the per-node shape.
 """
 
 from abc import ABC, abstractmethod
@@ -35,16 +33,10 @@ def _measure_conversation_metric(
     node_id: str,
     severity: Severity | None = None,
 ) -> Verdict:
-    """Shared measure/verdict-building step every conversation metric below
-    uses — same conservative-pass-on-malformed-output contract as the
-    node-level metrics (ToolArgumentJudge/TaskCompletionJudge).
-
-    ``severity``, when given, is used as-is — the rule-driven case
-    (``ConversationRuleJudge``, matching ``rule.severity`` the same way
-    tier-2's node-level ``LLMJudge`` does). Left ``None`` (every other
-    conversation metric here, which has no AgentSpec rule to key off), it's
-    derived from the metric's own score via ``severity_from_score`` (Phase
-    C3's calibration — see reasoning/calibration.py)."""
+    """Shared measure/verdict-building step for every conversation metric;
+    same conservative-pass-on-malformed-output contract as the node-level
+    metrics. ``severity`` overrides the score-derived default when the
+    caller already has a rule-configured severity to use."""
     try:
         metric.measure(test_case, _show_indicator=False)
         passed, reason = metric.success, metric.reason
@@ -174,22 +166,11 @@ def _format_transcript(test_case: ConversationalTestCase) -> str:
 
 
 class ConversationRuleJudge(ConversationMetricJudge):
-    """One rule judged across the whole conversation per AgentSpec rule — the
-    conversation-level counterpart to ``LLMJudge``'s per-rule node-level
-    judge, catching violations that only emerge across turns (e.g.
-    contradicting something promised two turns earlier), which no single-
-    turn check can see.
-
-    Uses the same hand-rolled ``judge_rule_with_llm`` as tier 2 (see its own
-    docstring) rather than a DeepEval ``ConversationalGEval`` — one of these
-    runs per rule per persona conversation regardless of whether that rule's
-    topic ever came up in it, so the same applicability/compliance split
-    applies here. Returns one verdict per rule, keyed by the rule's own id,
-    including severity: this is the one conversation metric judge NOT
-    covered by C3's calibration (see reasoning/calibration.py's module
-    docstring), since it's keyed to a real ``Rule`` and so correctly uses
-    ``rule.severity`` (config, set by a human), exactly like tier 2's
-    ``LLMJudge``.
+    """One rule judged across the whole conversation per AgentSpec rule —
+    catches violations that only emerge across turns (e.g. contradicting
+    something promised earlier), which no single-turn check can see. Uses
+    ``rule.severity`` directly rather than the score-derived default, like
+    tier 2's ``LLMJudge``.
     """
 
     def __init__(self, llm: LLMProvider, agent_spec: AgentSpec) -> None:
@@ -228,15 +209,10 @@ class ConversationRuleJudge(ConversationMetricJudge):
 class ConversationJudge:
     """Scores one full persona conversation (root-to-leaf), not a node.
 
-    Builds a single ``ConversationalTestCase`` from the turns and hands it to
-    every injected ``ConversationMetricJudge`` (Composition, like
-    ``CompositeJudge`` — every judge runs, no short-circuit), so DeepEval's
-    turn-shape conversion happens once per conversation, not once per metric.
-    Off by default in ``build_runner``: Phase C3's real measurement found
-    ~19 LLM calls (~$0.02 on Haiku) per persona across the 5 bundled metrics
-    (see ``build_conversation_judge``) — cheap per call, but that multiplies
-    with persona count on top of the per-node judge already running every
-    turn, so it stays an explicit opt-in.
+    Builds a single ``ConversationalTestCase`` and hands it to every injected
+    ``ConversationMetricJudge`` (every judge runs, no short-circuit). Off by
+    default in ``build_runner``: several LLM calls per persona on top of the
+    per-node judge already running every turn, so it stays an explicit opt-in.
     """
 
     def __init__(self, chatbot_role: str, judges: list[ConversationMetricJudge]) -> None:
@@ -272,9 +248,7 @@ class ConversationJudge:
 
 
 def build_conversation_judge(llm: LLMProvider, agent_spec: AgentSpec) -> ConversationJudge:
-    """Compose the bundled whole-conversation metrics with a per-rule
-    conversational GEval for ``agent_spec`` (the composition-root-style
-    factory, same shape as ``build_two_tier_judge``)."""
+    """Compose the bundled whole-conversation metrics with a per-rule judge for ``agent_spec``."""
     chatbot_role = agent_spec.purpose or agent_spec.system_prompt
     return ConversationJudge(
         chatbot_role,

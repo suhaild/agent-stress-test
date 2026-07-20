@@ -13,9 +13,8 @@ from dataclasses import dataclass
 from agent_stress_test.models import Cluster, Node, Verdict
 from agent_stress_test.ports import Embedder
 
-# Human-readable names for the failure mode each tactic exposes. "topic-switch"
-# and "ambiguity" are retained for runs stored before those tactics were
-# replaced (see simulator.py) so old reports still get a proper label.
+# "topic-switch"/"ambiguity" are kept for reports on runs stored before those
+# tactics were renamed in simulator.py.
 _TACTIC_LABELS = {
     "self-contradiction": "breaks under self-contradiction",
     "urgency-pressure": "breaks under urgency/pressure",

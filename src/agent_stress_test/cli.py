@@ -1,19 +1,7 @@
-"""Command-line entry point — the composition root (with runner.py).
+"""Command-line entry point — a composition root alongside ``orchestration/runner.py``.
 
-This is the one place, alongside ``orchestration/runner.py``, allowed to
-construct concrete adapters (``SqliteStore``, ``FakeLLMProvider``,
-``LiteLLMProvider``, ``SampleAgent``, ``HttpAgent``) and wire them together.
-Everything it renders goes through the pure ``report/terminal.py`` layer.
-
-Deliberately thin: the dashboard (``report/dashboard/server.py``) is the one
-real front end — every control and report surface lives there. This module
-keeps only what the dashboard can't do for itself: ``run`` (a scriptable,
-no-browser way to kick off a stress test, e.g. from CI) and ``serve`` (the
-thing that actually launches the dashboard — also how ``pyproject.toml``'s
-``agent-stress-test`` console script boots it). Every other command that
-used to live here (``report``, ``replay``, ``lock``, ``resolve``,
-``suggest-fix``, ``regress``, ``profile``) now has a dashboard equivalent
-with no CLI-only functionality left behind.
+Deliberately thin: the dashboard is the primary front end. Only ``run``
+(scriptable, no-browser runs) and ``serve`` (launches the dashboard) live here.
 """
 
 import argparse
@@ -46,47 +34,36 @@ _DEFAULT_DB = "runs.sqlite"
 
 
 def _cmd_run(args: argparse.Namespace, console: Console) -> int:
-    load_settings()  # side effect: load .env so litellm sees the API key
+    load_settings()  # loads .env so litellm sees the API key
     spec = load_agent_spec(args.agent_spec)
     llm = build_provider(args.provider)
     target = build_target(args, spec, llm)
     budget = args.budget
     sample_n = args.sample_n
 
-    # A short-lived peek at this agent's own approved StressProfile (if any),
-    # so an explicit --tactics naming one of its personas validates here
-    # instead of being rejected before build_runner() (which merges profile
-    # personas in automatically) ever sees it.
+    # Widen --tactics validation to include this agent's own approved
+    # StressProfile personas, which build_runner() merges in automatically.
     with SqliteStore(args.db) as store:
         reconcile_interrupted_runs(store)
         profile = store.get_stress_profile(spec.name)
     extra_valid = [persona.name for persona in profile.personas] if profile else []
     tactics = resolve_tactics(args.tactics, extra_valid=extra_valid)
 
-    # The simulator's job (write one adversarial customer line) doesn't need
-    # the target-tier model, so it defaults to a cheaper one.
+    # The simulator only writes one adversarial line per turn, so it defaults
+    # to a cheaper model than the target tier.
     sim_provider_name = resolve_sim_provider_name(args)
     sim_llm = llm if sim_provider_name == args.provider else build_provider(sim_provider_name)
 
-    # Self-consistency needs >= 2 samples to detect any disagreement; a single
-    # sample can only ever score 0.0, so skip the scorer (and every one of its
-    # extra target calls) entirely below that threshold. build_runner()
-    # resamples the target itself, so this applies to any target, not just
-    # the bundled SampleAgent.
+    # A single sample can only ever score 0.0, so skip the scorer below n=2.
     use_scorer = sample_n >= 2
     n_personas = len(tactics)
-    # build_runner() wires DeepEvalConversationSearch by default: one
-    # independent conversation per persona, up to `budget` turns each (see
-    # its own docstring) — not GreedyBestFirstSearch's expansion-tree shape,
-    # so this is a rough per-turn estimate, not an exact call count.
+    # Rough estimate, not exact: DeepEvalConversationSearch runs one
+    # conversation per persona up to `budget` turns each.
     nodes = n_personas * budget
     est_calls = nodes + (nodes * sample_n if use_scorer else 0)
     consistency = f"sample-n={sample_n}" if use_scorer else "off"
     sim_note = f", simulator={sim_provider_name}" if sim_provider_name != args.provider else ""
-    # Phase RE4: --format json/markdown is for CI gating, which redirects
-    # stdout and expects it to parse cleanly — no progress chatter or a Rich
-    # spinner mixed in, unlike the default --format rich (a human at a
-    # terminal, watching a live run).
+    # json/markdown feed CI gating via stdout, so suppress progress chatter.
     quiet = args.format != "rich"
     if not quiet:
         console.print(
@@ -133,8 +110,7 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace, console: Console) -> int:
-    # Imported lazily so `run` never pays for importing FastAPI/uvicorn or
-    # building the Jinja2 environment.
+    # Lazy import: `run` shouldn't pay for FastAPI/uvicorn/Jinja2 setup.
     import uvicorn
 
     from agent_stress_test.report.dashboard.server import create_app

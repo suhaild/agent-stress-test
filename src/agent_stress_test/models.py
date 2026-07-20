@@ -41,10 +41,8 @@ class ImageBlock(BaseModel):
 class ToolUseBlock(BaseModel):
     """An assistant-issued tool call, as a content block (litellm/Anthropic-shaped).
 
-    Field name is ``input`` (not ``input_parameters``) because this mirrors
-    the wire format litellm/Anthropic expect on the message itself — see
-    ``ToolCall`` for our own domain-level record of a tool call, which uses
-    ``input_parameters`` to match DeepEval's field name instead.
+    Field is ``input`` (not ``input_parameters``) to mirror the litellm/Anthropic
+    wire format; see ``ToolCall`` for our own domain-level record.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -76,28 +74,23 @@ class Message(BaseModel):
     """One turn in a conversation, in the shape every port passes around.
 
     ``content`` is usually plain text; it widens to a list of content blocks
-    only for messages that carry multimodal input or a tool call/result —
-    the "tool" role exists for the latter. Adapters that don't understand
-    block content (the fake provider, today) only ever see plain-text
-    messages, so nothing about them needs to change.
+    only for multimodal input or a tool call/result (the "tool" role).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     role: Literal["system", "user", "assistant", "tool"]
     content: str | list[ContentBlock]
-    # Provider-agnostic hint: this message ends a cacheable prompt prefix.
-    # Adapters that support prompt caching (e.g. litellm_provider) may act on
-    # it; others (e.g. the fake provider) ignore it.
+    # Hint that this message ends a cacheable prompt prefix; adapters that
+    # don't support prompt caching simply ignore it.
     cache: bool = False
 
 
 class Step(BaseModel):
     """One reasoning step exposed by a ReAct-style agent.
 
-    All fields are optional and extra fields are allowed: different agents
-    expose different step shapes, so this stays loosely typed by design
-    (the one exception to this file's usual `extra="forbid"` convention).
+    Loosely typed by design (`extra="allow"`, unlike the rest of this file):
+    different agents expose different step shapes.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -113,9 +106,7 @@ class ToolCall(BaseModel):
 
     ``input_parameters`` (not ``arguments``/``input``) matches DeepEval's own
     ``ToolCall`` field name, so this can be handed to DeepEval's tool metrics
-    (Phase C) without renaming. ``output`` holds the resolved result, if any —
-    an adapter that resolves a call's result separately (see ``ToolResult``)
-    folds it in here before the call is persisted.
+    without renaming.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -127,12 +118,9 @@ class ToolCall(BaseModel):
 
 
 class ToolResult(BaseModel):
-    """A tool's result, correlated back to its call by ``call_id``.
-
-    A standalone value an adapter can produce when it resolves a tool call
-    out of band, before folding ``content`` into the matching
-    ``ToolCall.output``.
-    """
+    """A tool's result, correlated back to its call by ``call_id`` — used
+    when an adapter resolves a call out of band, before folding it into
+    ``ToolCall.output``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -144,10 +132,9 @@ class ToolResult(BaseModel):
 class AgentResponse(BaseModel):
     """A target agent's reply, plus its reasoning trace/tool calls if any.
 
-    ``trace`` is the older free-text Step narration (still used by the
-    bundled ReAct-style SampleAgent); ``tool_calls`` is the newer structured
-    record a genuine tool-calling target (Phase A6) reports instead. Both are
-    additive and independent — a target reports whichever fits how it works.
+    ``trace`` is free-text Step narration (used by the ReAct-style
+    SampleAgent); ``tool_calls`` is a structured record a genuine
+    tool-calling target reports instead. A target reports whichever fits.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -180,10 +167,8 @@ class HttpTargetConfig(BaseModel):
 class PythonTargetConfig(BaseModel):
     """``target: {kind: python}`` — a bring-your-own Python callable.
 
-    ``import_path`` is ``"module.path:attribute"``: the module is imported
-    and the named attribute, a ``Callable[[list[Message]], str |
-    AgentResponse]``, is wrapped as a ``PythonFunctionAgent`` (see
-    ``composition.py``'s ``_load_python_target``).
+    ``import_path`` is ``"module.path:attribute"``, wrapped as a
+    ``PythonFunctionAgent`` (see ``composition.py``'s ``_load_python_target``).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -216,11 +201,9 @@ class ProviderTargetConfig(BaseModel):
 
 
 class SampleAdvancedTargetConfig(BaseModel):
-    """``target: {kind: sample_advanced}`` — the bundled demo agent's harder
-    sibling: same ReAct narration format as the implicit (``target: null``)
-    ``SampleAgent``, but every ``Action`` is executed for real against an
-    in-memory fake tool backend (see ``targets/sample_agent_advanced.py``)
-    instead of the model inventing its own ``Observation``."""
+    """``target: {kind: sample_advanced}`` — like the implicit SampleAgent,
+    but every ``Action`` executes for real against an in-memory fake tool
+    backend instead of the model inventing its own ``Observation``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -239,12 +222,8 @@ TargetConfig = Annotated[
 
 class Capabilities(BaseModel):
     """What a ``TargetAgent`` adapter actually supports, declared up front
-    (see ``TargetAgent.capabilities()`` in ``ports.py``) so a probe that needs
-    e.g. real tool-calling can ask before running, rather than discovering
-    "this target can't do that" as a confusing mid-run failure. Deliberately
-    just four booleans — no session lifecycle yet (see the build plan's
-    Phase D).
-    """
+    (see ``TargetAgent.capabilities()`` in ``ports.py``) so a probe can check
+    before running rather than fail confusingly mid-run."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -255,13 +234,10 @@ class Capabilities(BaseModel):
 
 
 class TokenUsage(BaseModel):
-    """Token counts + dollar cost accumulated across some set of LLM calls —
-    the immutable snapshot a ``UsageMeter`` (see ``ports.py``) produces via
-    ``.total()``. ``cost_usd`` stays ``0.0`` whenever a real cost couldn't be
-    computed (the fake provider, or a model id litellm's pricing table
-    doesn't recognize) — ``pricing_unavailable`` says why, rather than a
-    silently-wrong ``0.0`` being mistaken for "this really was free".
-    """
+    """Token counts + dollar cost accumulated across a set of LLM calls —
+    the immutable snapshot a ``UsageMeter`` produces via ``.total()``.
+    ``pricing_unavailable`` distinguishes a real $0 cost from one litellm
+    simply couldn't price."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -273,13 +249,9 @@ class TokenUsage(BaseModel):
 
 
 class RunUsage(BaseModel):
-    """A run's spend, split "adversary vs. rest" (see the build plan's Phase
-    A5): ``adversary`` is whatever drove the adversarial simulator (and, by
-    default, the tier-2 judge — see ``build_two_tier_judge``'s default
-    provider); ``primary`` is whatever drives the target agent itself (and,
-    by extension, the self-consistency scorer, which just resamples the
-    target) — see ``Runner.run()``, which reads both meters' totals here.
-    """
+    """A run's spend, split by role: ``adversary`` covers the simulator (and,
+    by default, the tier-2 judge); ``primary`` covers the target agent
+    itself and the self-consistency scorer that resamples it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -299,17 +271,9 @@ CheckType = Literal[
 class Rule(BaseModel):
     """A single behavioral rule the agent under test must obey.
 
-    Carries a stable `id` (referenced by the judge and by verdicts), the
-    human-readable `text` (shown to the agent and to the tier-2 LLM judge),
-    and a declared `severity`. Severity is configuration, not hardcoded in
-    the judge — changing it here changes the severity carried by verdicts.
-
-    `check_type` opts the rule into one of the deterministic tier-1
-    `RuleCheck`s (see `reasoning/judge.py`'s check-builder registry), with
-    `params` supplying that check's arguments (patterns, tool names, etc.).
-    Left as `None`, the rule gets no tier-1 check and is judged by the tier-2
-    LLM judge alone — this is the correct default for any rule whose
-    violation isn't a simple pattern/trace match.
+    `check_type` opts the rule into a deterministic tier-1 `RuleCheck` (see
+    `reasoning/judge.py`), with `params` as that check's arguments. Left
+    `None` (the default), the rule is judged by the tier-2 LLM judge alone.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -324,26 +288,11 @@ class Rule(BaseModel):
 class AgentSpec(BaseModel):
     """The declarative definition of the agent under test.
 
-    ``target`` describes how to build the ``TargetAgent`` this spec runs
-    against (see ``composition.py``'s ``_build_target_from_spec``) — left
-    unset (the common case), the run falls back to the bundled, LLM-driven
-    ``SampleAgent`` instead.
-
-    ``purpose``/``domain`` are optional free text (blank by default, so every
-    pre-existing spec still loads unchanged) describing what this agent is
-    for and what field it operates in — read by ``reasoning/profiler.py``'s
-    ``AgentProfiler`` so the personas/rules it proposes are grounded in this
-    specific agent, not the bundled customer-support tactic library.
-
-    ``name`` is the stable identifier every lookup keys off (regression
-    cases, stress profiles, system-prompt history, cross-run history — see
-    ``Store.list_runs_for_agent`` and friends) and must never change once
-    runs exist against it. ``display_name`` is purely cosmetic — the
-    dashboard shows it instead of ``name`` when set (see
-    ``report/dashboard/server.py``'s ``list_agent_specs``), so a spec can
-    read "Aria - Northwind Outfitters Support" in the UI while keeping a
-    stable snake_case ``name`` underneath. Blank by default, falling back to
-    ``name``, so every pre-existing spec still displays unchanged.
+    ``name`` is a stable identifier every lookup keys off (regression cases,
+    stress profiles, cross-run history) and must never change once runs
+    exist against it. ``display_name`` is purely cosmetic, falling back to
+    ``name`` when blank. ``target`` left unset falls back to the bundled
+    ``SampleAgent``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -385,50 +334,29 @@ class Node(BaseModel):
     parent_id: str | None = None
     messages: list[Message]
     target_reply: str
-    # Which branch produced this node — a bundled tactic name under
-    # GreedyBestFirstSearch, or a persona name (bundled or profile-sourced)
-    # under DeepEvalConversationSearch (see orchestration/deepeval_search.py's
-    # DeepEvalConversationSearch docstring). The field predates the persona
-    # engine and was never renamed since the two happen to share the same 5
-    # bundled names by default.
+    # Branch that produced this node: a tactic name (GreedyBestFirstSearch)
+    # or a persona name (DeepEvalConversationSearch).
     tactic: str | None = None
     instability_score: float | None = None
     verdict_id: str | None = None
-    # The structured tool calls the target made producing target_reply, if
-    # any (see AgentResponse.tool_calls) — persisted so a judge/metric or a
-    # replayed report can see them later, not just at judging time.
+    # Persisted so a judge/metric or a replayed report can see the target's
+    # tool calls later, not just at judging time.
     tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
 class Verdict(BaseModel):
     """A judge result attached to a node.
 
-    ``scope`` says what the verdict is *about*: ``"rule"`` (the default — an
-    AgentSpec behavioral rule, tier-1 or tier-2, keyed by ``rule_id``),
-    ``"tool"`` (a Phase-C tool-call metric, e.g. argument correctness — has no
-    ``rule_id`` and is rendered inline with the node's tool-call block, not as
-    a generic rule verdict), ``"task"`` (a Phase-C whole-node task-completion
-    metric), or ``"conversation"`` (a Phase-C2 whole-conversation metric —
-    scores a full root-to-leaf persona conversation, not one node; ``node_id``
-    is the conversation's LEAF node, since ``tree.path_to_root()`` of that id
-    reconstructs exactly the conversation judged. ``rule_id`` is set for these
-    too — either a fixed metric name like ``"role_adherence"`` or, for the
-    per-rule conversational GEval, the AgentSpec rule's own id — so failures
-    stay distinguishable from one another and from plain node-scoped rule
-    verdicts). Defaulting to ``"rule"`` keeps every pre-C verdict and every
-    already-persisted row valid unchanged.
+    ``scope`` says what's judged: ``"rule"`` (default, keyed by ``rule_id``),
+    ``"tool"``/``"task"`` (a tool-call or whole-node metric), or
+    ``"conversation"`` (a whole persona conversation — ``node_id`` is the
+    conversation's leaf node, since ``tree.path_to_root()`` from it
+    reconstructs the conversation judged).
 
-    ``applicable`` is distinct from ``passed``: whether the rule's own
-    subject matter was actually in play here at all. A tier-2/conversation
-    rule check that never had anything to violate is ``passed=True,
-    applicable=False`` -- genuinely compliant behavior under real pressure is
-    ``passed=True, applicable=True``. ``rule_coverage`` reads this to avoid
-    crediting a rule as "tested and held up" when it was never actually
-    exercised (see its own docstring). Always ``True`` for tier-1
-    deterministic checks, which only ever fire when their own trigger
-    pattern matched -- applicability is already implicit there. Defaults to
-    ``True`` so every pre-existing verdict, including already-persisted
-    rows, stays valid unchanged.
+    ``applicable=False`` means the rule's subject matter never came up here
+    (still ``passed=True``), distinct from genuinely holding up under real
+    pressure (``passed=True, applicable=True``) — ``rule_coverage`` uses this
+    to avoid crediting an untested rule. Always ``True`` for tier-1 checks.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -459,15 +387,10 @@ class Cluster(BaseModel):
 
 
 class RegressionCase(BaseModel):
-    """A confirmed failure, locked in as a permanent replay target.
-
-    Built from one failure cluster's representative node (see
-    ``orchestration/regression.py``'s ``promote_clusters_to_cases``), so the
-    corpus tracks distinct failure patterns, not every raw failing node.
-    ``status`` is set by a human — ``"open"`` means a known, not-yet-fixed
-    issue (replaying it and finding it still fails is expected, not an
-    error); ``"resolved"`` means a fix was applied and confirmed, so a future
-    replay finding it fails again is a genuine regression.
+    """A confirmed failure, locked in as a permanent replay target — one per
+    failure cluster's representative node, not every raw failing node.
+    ``status`` is set by a human: ``"open"`` means still-failing is expected;
+    ``"resolved"`` means a future failure is a genuine regression.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -485,12 +408,8 @@ class RegressionCase(BaseModel):
 
 class SystemPromptVersion(BaseModel):
     """A snapshot of an agent spec's ``system_prompt`` taken immediately
-    before it gets overwritten by ``apply_system_prompt`` — the record that
-    lets a fix be undone from the dashboard itself. Hosting this online means
-    an operator may have no shell/git access to the deployed file, so ``git
-    checkout`` isn't a real safety net there; this is the in-app substitute,
-    persisted the same way as everything else in the ``Store``.
-    """
+    before ``apply_system_prompt`` overwrites it, so a fix can be undone from
+    the dashboard even when the operator has no git access to the file."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -503,11 +422,9 @@ class SystemPromptVersion(BaseModel):
 class ProfilePersona(BaseModel):
     """One profiler-generated adversarial persona for a specific AgentSpec.
 
-    The same ``scenario``/``user_description`` shape DeepEval's own
-    ``ConversationalGolden`` needs (see ``reasoning/profiler.py``'s
-    ``to_conversational_golden``), kept as our own plain model here so
-    ``deepeval`` stays confined to the reasoning layer (CLAUDE.md Golden
-    Rule #1) — ``models.py`` is core and must never import it.
+    Mirrors the ``scenario``/``user_description`` shape DeepEval's own
+    ``ConversationalGolden`` needs, kept as a plain model here so
+    ``deepeval`` stays confined to the reasoning layer.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -519,16 +436,10 @@ class ProfilePersona(BaseModel):
 
 class StressProfile(BaseModel):
     """A profiler-generated bundle of candidate personas and rules for one
-    AgentSpec — the hybrid gate's artifact (see ``reasoning/profiler.py``).
+    AgentSpec (see ``reasoning/profiler.py``).
 
-    ``personas`` are usable as soon as they're generated: picking one to run
-    a simulated conversation against has no lasting effect on the spec.
-    ``candidate_rules`` are different — silently merging a bad rule into
-    ``AgentSpec.rules`` would misjudge every future run of this agent, so
-    they stay PROPOSED here, separate from the spec's own ``rules``, until a
-    human reviews (and edits, via the dashboard's profile screen) them.
-    Nothing in this codebase copies ``candidate_rules`` into an AgentSpec
-    automatically.
+    ``candidate_rules`` stay proposed, separate from ``AgentSpec.rules``,
+    until a human reviews them — nothing here copies them in automatically.
     """
 
     model_config = ConfigDict(extra="forbid")

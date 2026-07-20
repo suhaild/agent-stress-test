@@ -1,19 +1,7 @@
 """Bridges our LLMProvider port into DeepEval's own model interface.
 
-This is the only module allowed to import ``deepeval`` directly — DeepEval is
-reasoning-layer infrastructure (an evaluation framework this codebase builds
-on, not an LLM provider SDK that needs its own port; see CLAUDE.md's Golden
-Rule #1), the same way ``pysbd`` already is in ``reasoning/judge.py``.
-
-``LLMProviderAsDeepEvalLLM`` embeds the requested Pydantic schema's JSON
-Schema into the prompt text itself (behind ``SCHEMA_MARKER``) before calling
-``provider.complete()`` — the ``LLMProvider`` port's ``complete(messages) ->
-str`` signature never changes, so any provider (real or fake) can serve a
-schema-constrained DeepEval call exactly the way it serves a plain one. A
-real model benefits too: the appended schema is an extra, explicit
-structured-output instruction alongside DeepEval's own prose-and-example
-prompt. ``providers/shaped_fake.py``'s ``ShapedFakeLLM`` is the fake that
-actually acts on this marker instead of ignoring it.
+Only module allowed to import ``deepeval`` directly — it's evaluation-
+framework infrastructure, not an LLM provider SDK (see CLAUDE.md Golden Rule #1).
 """
 
 import asyncio
@@ -26,6 +14,8 @@ from agent_stress_test.models import Message
 from agent_stress_test.ports import LLMProvider
 from agent_stress_test.reasoning.json_utils import _strip_json_fence
 
+# Embeds the schema into the prompt text after this marker, since LLMProvider.complete()
+# takes no schema param — providers/shaped_fake.py's ShapedFakeLLM is the fake that acts on it.
 SCHEMA_MARKER = (
     "\n\n=== RESPONSE_SCHEMA (JSON Schema — respond with ONLY a JSON object matching it) ===\n"
 )

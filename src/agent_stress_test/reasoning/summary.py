@@ -1,11 +1,8 @@
-"""Phase RE2's opt-in LLM rephrasing of the deterministic run summary.
+"""Opt-in LLM rephrasing of the deterministic run summary.
 
-Deterministic-first (see ``orchestration/executive_summary.py``'s
-``deterministic_summary`` — always computed, no network, shown by default).
-This is the ONLY place that spends a real LLM call turning those same stats
-into more natural prose; a report surface must call it explicitly (never
-automatically), since — unlike the deterministic pass — it adds cost and a
-network dependency.
+``orchestration/executive_summary.py``'s deterministic summary is always
+computed and shown by default; this is the only place that spends an LLM
+call turning those stats into prose, so callers must invoke it explicitly.
 """
 
 from agent_stress_test.models import Message
@@ -21,10 +18,7 @@ _SUMMARIZER_SYSTEM = (
 
 
 class RunSummarizer:
-    """Rephrases a deterministic run summary into punchier prose (Strategy —
-    just a different tactic for producing the summary text, same shape as
-    ``RemediationSuggester``/``AgentProfiler``: an LLM-backed component
-    injected with its ``LLMProvider``, never constructing one itself)."""
+    """Rephrases a deterministic run summary into punchier prose (Strategy)."""
 
     def __init__(self, llm: LLMProvider) -> None:
         self._llm = llm

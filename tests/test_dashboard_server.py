@@ -416,6 +416,23 @@ def test_run_page_shows_lock_button_and_corpus_link(tmp_path, sample_agent_spec_
     assert "View regression corpus" in response.text
 
 
+def test_lock_suggest_fix_and_generate_summary_buttons_guard_against_double_submit(
+    tmp_path, sample_agent_spec_path
+):
+    """Regression guard: Lock, Suggest Fix, and Generate AI Summary all fire
+    real backend work (a regression-case write or a real LLM call) with no
+    debounce -- two fast clicks used to double-fire. hx-disabled-elt="this"
+    self-disables each button for the duration of its own request."""
+    db_path = tmp_path / "runs.sqlite"
+    run_id, _cluster_id = _seed_locked_ready_run(db_path, sample_agent_spec_path)
+    client = TestClient(create_app(db_path=str(db_path)))
+
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert response.text.count('hx-disabled-elt="this"') >= 3
+
+
 def test_suggest_fix_renders_a_suggestion_panel(tmp_path, sample_agent_spec_path):
     db_path = tmp_path / "runs.sqlite"
     run_id, cluster_id = _seed_locked_ready_run(db_path, sample_agent_spec_path)
@@ -1982,6 +1999,24 @@ def test_post_llm_summary_route_returns_rephrased_text(tmp_path):
     assert response.status_code == 200
     assert "AI Rephrasing" in response.text
     assert "fake-reply:" in response.text  # FakeLLMProvider's deterministic echo
+
+
+def test_post_llm_summary_409s_while_the_run_is_still_running(tmp_path):
+    """Same gap as the export/lock/suggest-fix routes (see
+    test_export_lock_and_suggest_fix_all_409_while_a_run_is_still_running)
+    -- this route read straight from the store with no _require_terminal_run
+    guard at all."""
+    db_path = str(tmp_path / "runs.sqlite")
+    client = TestClient(create_app(db_path=db_path))
+    with SqliteStore(db_path) as store:
+        store.save_run(
+            Run(id="live-run", agent_spec=make_agent_spec(), provider="fake", status="running")
+        )
+
+    response = client.post("/runs/live-run/summary/llm", data={"provider": "fake"})
+
+    assert response.status_code == 409
+    assert "isn't ready yet" in response.json()["detail"]
 
 
 def test_executive_summary_appears_on_the_run_page(tmp_path):

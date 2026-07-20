@@ -34,13 +34,13 @@
           <span class="tag tag-pass">locked</span>
           {% else %}
           <button type="button" hx-post="/runs/{{ run_id }}/clusters/{{ entry.cluster.id }}/lock"
-                  hx-target="#cluster-table" hx-swap="innerHTML" class="btn-ghost text-xs">
+                  hx-target="#cluster-table" hx-swap="innerHTML" hx-disabled-elt="this" class="btn-ghost text-xs">
             Lock
           </button>
           {% endif %}
           <button type="button" hx-post="/runs/{{ run_id }}/clusters/{{ entry.cluster.id }}/suggest-fix"
                   hx-vals='{"provider": "{{ run_provider }}"}'
-                  hx-target="#suggestion-panel" hx-swap="innerHTML" class="btn-ghost text-xs ml-2">
+                  hx-target="#suggestion-panel" hx-swap="innerHTML" hx-disabled-elt="this" class="btn-ghost text-xs ml-2">
             Suggest Fix
           </button>
         </td>

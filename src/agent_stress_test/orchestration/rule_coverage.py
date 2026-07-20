@@ -1,11 +1,9 @@
-"""Rule coverage (Phase RE3): every declared ``Rule`` x pass/fail/near-miss/
+"""Rule coverage: every declared ``Rule`` x pass/fail/near-miss/
 never-exercised, cross-referenced against a run's verdicts.
 
-The existing failure/cluster/near-miss views only ever show rules that
-actually produced a verdict — a rule that never fired is invisible in all of
-them. This starts from ``AgentSpec.rules`` (the full declared set) instead of
-from whatever verdicts happen to exist, so a rule with zero verdicts still
-shows up, as "never exercised".
+Starts from ``AgentSpec.rules`` rather than from whatever verdicts happen
+to exist, so a rule with zero verdicts still shows up as "never exercised"
+instead of being invisible.
 """
 
 from dataclasses import dataclass
@@ -32,18 +30,12 @@ class RuleCoverage:
 def rule_coverage(rules: list[Rule], verdicts: list[Verdict]) -> list[RuleCoverage]:
     """One ``RuleCoverage`` per declared rule, in declaration order.
 
-    ``status`` is "failed" if any verdict for that rule failed, else
-    "near_miss" if ``graded_proximity`` (Phase C5 — the same lens
-    ``near_miss_ranking`` uses) finds a close call among its passing
-    verdicts, else "passed" if it has verdicts at all, else
-    "never_exercised" — the rule this phase makes visible for the first
-    time.
-
-    Verdicts with ``applicable=False`` (see ``Verdict``'s own docstring) are
-    filtered out before any of the above — a rule judged "not applicable"
-    every time was never actually exercised, even though each of those
-    verdicts individually passed, and crediting it as "passed" would
-    overstate what this run actually demonstrated about that rule.
+    Status: "failed" if any verdict failed, else "near_miss" if
+    ``graded_proximity`` finds a close call, else "passed" if it has
+    verdicts at all, else "never_exercised". Verdicts with
+    ``applicable=False`` are excluded first — a rule judged "not
+    applicable" every time was never actually exercised, even though each
+    such verdict individually passed.
     """
     by_rule: dict[str, list[Verdict]] = {}
     for verdict in verdicts:

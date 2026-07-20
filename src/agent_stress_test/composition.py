@@ -1,12 +1,6 @@
-"""Shared wiring helpers reused by every composition root.
-
-``cli.py`` and ``report/dashboard/server.py`` both need to turn a bag of
-user-supplied parameters (provider name, agent spec, tactics, ...) into the
-concrete adapters ``build_runner()`` expects, and both need to reload a
-finished run's tree from the ``Store`` for reporting. That logic lives here,
-once, so neither composition root duplicates it — a composition root should
-only translate its own input shape (argv vs. an HTTP request) into calls on
-these functions, never re-implement the decisions they make.
+"""Shared wiring helpers reused by every composition root (``cli.py`` and
+``report/dashboard/server.py``), so neither duplicates adapter construction
+or run-reloading logic.
 """
 
 from __future__ import annotations
@@ -53,29 +47,22 @@ from agent_stress_test.targets.sample_agent_advanced import AdvancedSampleAgent
 from agent_stress_test.targets.subprocess_agent import SubprocessAgent
 from agent_stress_test.targets.tool_backends import build_northwind_tool_backend
 
-# The simulator only has to write one plausible adversarial customer line, not
-# solve the task under test — a cheap, fast model does that job as well as the
-# target-tier one, at a fraction of the cost. Used only when the run's main
-# provider is a real (non-fake) model and no explicit override was given.
+# A cheap model is enough for the simulator's one-line adversarial turns.
 DEFAULT_SIM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
 
 def build_provider(name: str) -> LLMProvider:
     if name == "fake":
-        # ShapedFakeLLM is a strict superset of the plain FakeLLMProvider
-        # (identical "fake-reply: ..." behavior whenever no DeepEval schema
-        # was requested) — "fake" means the fully-capable offline stand-in
-        # everywhere, since the adversarial simulator now always drives
-        # sim_provider through DeepEval's schema-validated turn generation
-        # (see orchestration/deepeval_search.py), even offline.
+        # ShapedFakeLLM is a superset of FakeLLMProvider that also satisfies
+        # DeepEval's schema-validated turn generation, so "fake" always means
+        # this fully offline stand-in.
         return ShapedFakeLLM()
     return LiteLLMProvider(model=name)
 
 
 def resolve_sim_provider_name(args: argparse.Namespace) -> str:
-    """The model name to drive the simulator: explicit override, else a cheap
-    default — unless the main provider is "fake", which stays fake so offline
-    runs never silently reach out to a real API."""
+    """Explicit override, else a cheap default — unless the main provider is
+    "fake", which stays fake so offline runs never reach a real API."""
     if args.sim_provider is not None:
         return args.sim_provider
     if args.provider == "fake":
@@ -90,13 +77,8 @@ def build_target(args: argparse.Namespace, agent_spec: AgentSpec, llm: LLMProvid
 
 
 def _build_target_from_spec(agent_spec: AgentSpec, llm: LLMProvider) -> TargetAgent:
-    """Build whatever ``TargetAgent`` a spec's ``target:`` block declares —
-    the one place that reads it generically, so a new kind is a new branch
-    here, not a new special-case threaded through cli.py/server.py. No
-    ``target`` block (the common case) falls back to the bundled
-    SampleAgent, driven by the run's own provider, exactly as before this
-    field existed.
-    """
+    """Build whatever ``TargetAgent`` a spec's ``target:`` block declares.
+    No ``target`` block falls back to the bundled SampleAgent."""
     target = agent_spec.target
     if target is None:
         return SampleAgent(agent_spec, llm)
@@ -114,9 +96,8 @@ def _build_target_from_spec(agent_spec: AgentSpec, llm: LLMProvider) -> TargetAg
 
 
 def _load_python_target(import_path: str) -> TargetAgent:
-    """Import ``"module.path:attribute"`` and wrap the callable it names as a
-    ``PythonFunctionAgent`` — the shape any bring-your-own Python function
-    target takes (``Callable[[list[Message]], str | AgentResponse]``)."""
+    """Import ``"module.path:attribute"`` and wrap the named callable as a
+    ``PythonFunctionAgent``."""
     module_name, _, attr_name = import_path.partition(":")
     if not attr_name:
         raise ValueError(
@@ -172,8 +153,8 @@ def load_bundle(
 
 @dataclass(frozen=True)
 class CrossRunBundle:
-    """Everything Phase RE1's cross-run panels need for one run — see
-    ``orchestration/cross_run.py`` for how each piece is actually computed."""
+    """Cross-run trend/diff/pass-rate data for one run — see
+    ``orchestration/cross_run.py`` for how each piece is computed."""
 
     trend: list[TrendPoint]
     diff: RunDiff
@@ -183,12 +164,8 @@ class CrossRunBundle:
 def load_cross_run_bundle(
     store: Store, run: Run, current_clusters: list[Cluster], current_verdicts: list[Verdict]
 ) -> CrossRunBundle:
-    """Fetch this agent's run history from ``store`` and fold it into a
-    ``CrossRunBundle`` — the one place that decides what "historical" means
-    (every other completed run for this ``agent_spec.name``, see
-    ``Store.list_runs_for_agent``) so the dashboard route stays a plain
-    translation of this into template context.
-    """
+    """Fetch this agent's other completed runs and fold them into a
+    ``CrossRunBundle``."""
     agent_runs = store.list_runs_for_agent(run.agent_spec.name)
     trend = reliability_trend(agent_runs)
 
@@ -210,12 +187,9 @@ def load_cross_run_bundle(
 def resolve_tactics(tactics_arg: str | None, *, extra_valid: Iterable[str] = ()) -> list[str]:
     """A validated tactic subset from a comma-separated arg (default: all).
 
-    ``extra_valid`` widens what counts as a valid name beyond the bundled
-    tactic registry — the caller passes in an agent's own approved
-    ``StressProfile`` persona names (if any) here, so ``build_runner()``
-    (which merges those personas in automatically — see ``runner.py``'s
-    ``_profile_extra_personas``) never rejects a name it would actually be
-    able to run.
+    ``extra_valid`` widens valid names beyond the bundled registry — pass an
+    agent's own approved ``StressProfile`` persona names here so a name
+    ``build_runner()`` would accept isn't rejected before it gets there.
     """
     bundled = default_registry().names()
     extra = [name for name in extra_valid if name not in bundled]
@@ -234,11 +208,9 @@ def resolve_tactics(tactics_arg: str | None, *, extra_valid: Iterable[str] = ())
 def cluster_and_persist(result: RunResult, store: Store) -> list[Cluster]:
     """Cluster a finished run's failures and persist them.
 
-    The one clustering step every composition root must call identically —
-    ``Runner.run()`` doesn't do this itself (clustering isn't part of running
-    a search, it's a reporting concern), so whichever front end triggered the
-    run (CLI or dashboard) calls this the same way, and a given run always
-    gets the same cluster labels no matter which one produced it.
+    ``Runner.run()`` doesn't do this itself — clustering is a reporting
+    concern, not part of running a search — so every composition root calls
+    this the same way after a run finishes.
     """
     clusterer = FailureClusterer(HashingEmbedder())
     clusters = clusterer.cluster(
@@ -253,15 +225,8 @@ def resolve_cluster_remediation_target(
     tree: ConversationTree, clusters: list[Cluster], cluster_id: str, agent_spec: AgentSpec
 ) -> tuple[Node, Rule, Verdict]:
     """The (node, rule, failing verdict) a "suggest a fix" request needs for
-    one cluster: the cluster must name a representative node, that node must
-    actually carry a failing verdict, and the verdict's rule must still exist
-    on the current spec. Raises ``ValueError`` (the same contract every other
-    lookup helper here uses — see ``_find_agent_spec_path_by_name`` and
-    friends in ``report/dashboard/server.py``) describing exactly which
-    precondition failed, so the one caller (the dashboard's "suggest a fix"
-    route) only translates that into an HTTP 404, never re-derives the chain
-    itself.
-    """
+    one cluster. Raises ``ValueError`` describing whichever precondition
+    failed (no representative node, no failing verdict, unknown rule)."""
     cluster = next((c for c in clusters if c.id == cluster_id), None)
     if cluster is None or cluster.representative_node_id is None:
         raise ValueError(f"Cluster '{cluster_id}' has no representative node.")
@@ -288,11 +253,8 @@ def apply_profile_edits(
 ) -> StressProfile:
     """Fold a submitted profile-editor form into an updated StressProfile.
 
-    What counts as a valid edited row is a decision, not a translation, so it
-    lives here rather than in the dashboard route: a persona row needs all
-    three fields non-blank; a rule row needs non-blank text (a blank
-    ``rule_id`` mints a fresh one, for a newly-added row the form has no id
-    for yet).
+    A persona row needs all three fields non-blank; a rule row needs
+    non-blank text (a blank ``rule_id`` mints a fresh one, for newly-added rows).
     """
     return existing.model_copy(
         update={
@@ -312,10 +274,7 @@ def apply_profile_edits(
 
 def remove_candidate_rule(profile: StressProfile, rule_id: str) -> StressProfile:
     """Drop one candidate rule from a profile, e.g. once it's been written
-    into the agent spec's own ``rules:`` list (see
-    ``config_writer.apply_candidate_rule``) — it's no longer a *candidate*
-    at that point, it's a real rule, so it shouldn't keep showing up here
-    asking for review."""
+    into the agent spec's own ``rules:`` list."""
     return profile.model_copy(
         update={
             "candidate_rules": [r for r in profile.candidate_rules if r.id != rule_id],
@@ -329,20 +288,10 @@ _INTERRUPTED_ERROR = "Interrupted — the process stopped before this run finish
 def reconcile_interrupted_runs(store: Store) -> int:
     """Close out any run still ``pending``/``running`` at process startup.
 
-    Both composition roots execute a run on a thread that can be killed
-    outright -- the dashboard's is a daemon thread (see
-    ``report/dashboard/server.py``'s ``post_run``), and the CLI's own
-    process can just as easily be Ctrl+C'd (``KeyboardInterrupt`` isn't an
-    ``Exception``, so it skips right past the existing "mark this run
-    failed" handling around the run itself). Either way, nothing is left
-    running to ever flip that row out of "running". But a run can only
-    legitimately BE "running" while the process that started it is still
-    alive: neither composition root keeps any in-memory record of a run
-    that could survive its own restart, so the moment a *new* process
-    starts up, any row still claiming to be "running" can only be a
-    leftover from one that no longer exists -- safe to close out here,
-    every time, before that process does anything else with the store.
-    Returns how many rows were fixed, for a caller that wants to log it.
+    A run can only legitimately be "running" while its process is alive, and
+    neither composition root persists in-memory run state across a restart —
+    so any row still "running" here is a crashed leftover, safe to fail.
+    Returns how many rows were fixed.
     """
     fixed = 0
     for run in store.list_runs(limit=10_000):

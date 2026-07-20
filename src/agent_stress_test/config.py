@@ -30,6 +30,5 @@ def load_settings(path: str | Path | None = None, *, env_file: str | Path = ".en
 
 
 def load_agent_spec(path: str | Path) -> AgentSpec:
-    """Load an AgentSpec from a YAML file."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     return AgentSpec.model_validate(data)

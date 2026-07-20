@@ -1,19 +1,10 @@
-"""Agent Profiler — generates per-agent adversarial personas and candidate
-behavioral rules from an AgentSpec's own purpose/domain/system prompt/tools,
-instead of the bundled 5-tactic library (``reasoning/simulator.py``,
-``reasoning/deepeval_simulator.py``), which is customer-support-flavored and
-doesn't fit every domain.
+"""Generates per-agent adversarial personas and candidate rules from an
+AgentSpec's own purpose/domain/system prompt/tools, instead of the fixed
+5-tactic library.
 
-This is the hybrid gate's generation half: ``AgentProfiler.profile()``
-produces a ``StressProfile`` that is PROPOSED, never auto-applied — a human
-reviews (and edits, via the dashboard's profile screen or by hand-editing
-before ``cli.py``'s ``profile`` command persists it) before anything from it
-is used. Unlike ``LLMJudge``/``RemediationSuggester``, a malformed response
-here is NOT silently swallowed into a graceful fallback: generating a profile
-IS the entire point of calling this, so a failure to parse one is surfaced as
-a real error (via ``cli.py``'s existing top-level ``except ValueError``
-handler), not a silently-empty profile that looks like "the agent has no
-gaps."
+Output is proposed only, never auto-applied — a human reviews it before use.
+Unlike LLMJudge/RemediationSuggester, a malformed LLM response here raises
+rather than failing back silently, since producing the profile is the point.
 """
 
 import hashlib
@@ -75,15 +66,8 @@ class _ProfilerOutput(BaseModel):
 
 
 def _rule_id(agent_spec_name: str, text: str) -> str:
-    """Stable across regenerations: hashed on the rule's own text rather than
-    its position in the LLM's response list. A positional id (candidate-0,
-    candidate-1, ...) would silently collide the moment a *different* rule
-    landed at an index some *earlier* generation had already applied to the
-    real spec -- exactly what happened in practice (a regenerated profile's
-    new candidate-6 collided with a since-applied, unrelated candidate-6 from
-    an earlier profile). Hashing the text means the id only repeats when the
-    text is identical, in which case colliding is correct -- see profile()'s
-    own filter against the spec's existing rule ids."""
+    """Hashes the rule text (not its list position) so ids stay stable across
+    regenerated profiles and don't collide with previously applied rules."""
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:10]
     return f"{agent_spec_name}-candidate-{digest}"
 
@@ -98,9 +82,7 @@ class AgentProfiler:
     def profile(self, agent_spec: AgentSpec) -> StressProfile:
         raw = self._llm.complete(self._prompt(agent_spec))
         output = self._parse(raw)
-        # A rule proposed again with the exact same text as one already
-        # applied to this spec isn't a new candidate -- it's already covered,
-        # so it's dropped rather than shown for review a second time.
+        # Drop rules already applied to this spec (same text -> same id).
         existing_rule_ids = {r.id for r in agent_spec.rules}
         candidate_rules = []
         for r in output.candidate_rules:
@@ -144,11 +126,7 @@ class AgentProfiler:
 
 
 def to_conversational_golden(persona: ProfilePersona) -> ConversationalGolden:
-    """Bridge a profiler-generated persona into DeepEval's own persona shape —
-    the same conversion pattern as ``deepeval_simulator.py``'s ToolCall
-    bridges — so an approved profile's personas can drive a
-    ``ConversationSimulator`` conversation exactly like the bundled tactic
-    library's fixed ``PERSONAS`` dict does."""
+    """Converts a profiler-generated persona into DeepEval's ConversationalGolden shape."""
     return ConversationalGolden(
         scenario=persona.scenario, user_description=persona.user_description
     )

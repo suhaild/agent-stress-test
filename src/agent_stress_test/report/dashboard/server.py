@@ -1,15 +1,8 @@
 """The web dashboard's FastAPI app — a second composition root, alongside
-``cli.py``.
-
-Routes here only translate HTTP <-> the same ``build_runner()``/``Runner``
-wiring ``cli.py`` uses; the shared decision logic (which provider, which
-tactics, how to reload a finished run) lives in ``composition.py`` so neither
-front end duplicates it. The live-run registry and SSE scheduler live in
-``live_events.py``; system-prompt diffing and version history live in
-``prompt_diff.py``; cluster/conversation-verdict ranking shared with the CLI
-report lives in ``report/shared.py``. This module owns what's left: the HTTP
-routes themselves, plus the one background-thread job (``_execute_run``)
-they launch.
+``cli.py``. Routes translate HTTP <-> the same ``build_runner()``/``Runner``
+wiring ``cli.py`` uses; shared decision logic lives in ``composition.py``,
+the live-run registry/SSE scheduler in ``live_events.py``, prompt diffing in
+``prompt_diff.py``, and cluster/verdict ranking in ``report/shared.py``.
 """
 
 from __future__ import annotations
@@ -93,10 +86,8 @@ from agent_stress_test.store.sqlite_store import SqliteStore
 
 _DEFAULT_DB = "runs.sqlite"
 
-# Phase C6's scoring-model picker: maps the <select>'s value to a ScoringModel
-# class (see orchestration/reliability.py) — re-scores a run's already-loaded
-# nodes/verdicts on demand, never touches what was actually persisted as
-# Run.final_score.
+# Maps the scoring-model <select>'s value to a ScoringModel class; re-scores
+# on demand, never touches what was persisted as Run.final_score.
 _SCORING_MODELS = {
     SeverityWeightedModel.name: SeverityWeightedModel,
     UnweightedFailureModel.name: UnweightedFailureModel,
@@ -106,11 +97,8 @@ _SCORING_MODELS = {
 _CONFIG_AGENTS_DIR = Path(__file__).resolve().parents[4] / "config" / "agents"
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
-# The New Run form's Target Agent card shows the short label (fits a small
-# badge without wrapping) instead of the raw `target.kind` string (or
-# "sample" for the implicit/unset default); the detail is the same
-# information spelled out, shown as a hover tooltip. Purely display — never
-# read back from the client.
+# Display-only label/detail pairs for the New Run form's Target Agent card;
+# never read back from the client.
 _TARGET_KIND_INFO = {
     "sample": (
         "Bundled Agent · Narrated Tools",
@@ -142,18 +130,11 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
 def list_agent_specs() -> list[dict[str, Any]]:
-    """The configured agent specs, as ``[{"id": <filename>, "name": <display
-    name>, ...}]`` — "name" here is the spec's ``display_name`` if it set one
-    (cosmetic), else its stable ``name`` (see ``AgentSpec.display_name``'s
-    docstring); "id" is always the real filename, since that's what
-    ``_resolve_agent_spec_path`` looks up.
-
-    The remaining fields (``domain``, ``purpose``, ``tools_count``,
-    ``tool_names``, ``rules_count``, ``target_kind_label``,
-    ``target_kind_detail``) are static, file-only metadata — no store lookup
-    — embedded into the New Run form's Target Agent card so switching the
-    agent dropdown can update that card instantly, client-side, without a
-    round trip (see ``run_form.html``'s ``AGENT_SPECS_META``)."""
+    """The configured agent specs as ``[{"id": <filename>, "name": <display
+    name>, ...}]``; "id" is always the real filename, used by
+    ``_resolve_agent_spec_path``. The remaining fields are static, file-only
+    metadata embedded so the New Run form's Target Agent card can update
+    client-side without a round trip."""
     specs = [
         (path.name, load_agent_spec(path)) for path in sorted(_CONFIG_AGENTS_DIR.glob("*.yaml"))
     ]
@@ -178,9 +159,8 @@ def list_agent_specs() -> list[dict[str, Any]]:
 
 
 def list_tactics() -> list[dict[str, str]]:
-    """The built-in tactic library, as ``[{"id": <name>, "description": ...}]`` —
-    read from the same registry the simulator uses, so the dashboard's tactic
-    picker can never drift from what actually runs."""
+    """The built-in tactic library, read from the same registry the
+    simulator uses so the picker can't drift from what actually runs."""
     registry = default_registry()
     return [
         {"id": name, "description": registry.get(name).description}
@@ -189,24 +169,8 @@ def list_tactics() -> list[dict[str, str]]:
 
 
 def _personas_picker_context(agent_spec: AgentSpec, store: SqliteStore) -> dict:
-    """The run form's per-agent Attack Tactics picker context
-    (``fragments/personas_picker.html``): this agent's own stress profile
-    personas if one has been generated, else the bundled tactic library --
-    plus its name and whether it already has a saved profile, so the
-    picker's inline "Generate/Regenerate Profile" action knows which agent to
-    profile and how to word its own button.
-
-    ``tactics`` is fully consumable by a real run: ``build_runner()`` (see
-    ``orchestration/runner.py``'s ``_profile_extra_personas``) merges this
-    same spec's approved profile personas in automatically, and
-    ``resolve_tactics``'s ``extra_valid`` (see ``_execute_run`` below)
-    accepts a profile-sourced name explicitly selected here.
-
-    ``candidate_rule_count`` surfaces the profiler's *other* output --
-    proposed rules -- which nothing in the run form otherwise mentions, even
-    though generating a profile always produces both. Nothing here applies
-    them; it's just a nudge to go review them on the profile page.
-    """
+    """The run form's Attack Tactics picker context: this agent's own stress
+    profile personas if one exists, else the bundled tactic library."""
     profile = store.get_stress_profile(agent_spec.name)
     has_profile = profile is not None and bool(profile.personas)
     tactics = (
@@ -224,11 +188,9 @@ def _personas_picker_context(agent_spec: AgentSpec, store: SqliteStore) -> dict:
 
 
 def list_models() -> list[dict[str, str]]:
-    """A short, curated list of commonly-used LLM ids for the model pickers.
-
-    Not exhaustive — litellm accepts any provider/model string, so the picker
-    is a native ``<datalist>`` suggestion list, not a closed enum. Typing a
-    different id (a self-hosted model, a different provider) still works."""
+    """Curated LLM ids for the model pickers. Not exhaustive — the picker is
+    a ``<datalist>`` suggestion list, not a closed enum; any litellm
+    provider/model string still works."""
     return [
         {"id": "fake", "label": "Offline Test Double — no API key needed"},
         {"id": "anthropic/claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 — cheap & fast"},
@@ -238,21 +200,17 @@ def list_models() -> list[dict[str, str]]:
 
 
 def _resolve_agent_spec_path(agent_spec_id: str) -> Path:
-    """Map a client-submitted id back to a real file, refusing anything not in
-    the enumerated list — the dashboard never accepts a raw filesystem path
-    from the browser."""
+    """Map a client-submitted id back to a real file, refusing anything not
+    in the enumerated list — never a raw filesystem path from the browser."""
     if any(entry["id"] == agent_spec_id for entry in list_agent_specs()):
         return _CONFIG_AGENTS_DIR / agent_spec_id
     raise ValueError(f"Unknown agent spec '{agent_spec_id}'.")
 
 
 def _find_agent_spec_path_by_name(agent_spec_name: str) -> Path:
-    """Resolve a spec's own ``.name`` (what RegressionCase is keyed on, and
-    all a run remembers) back to its current, live YAML file — a regression
-    replay (or an applied fix) must act on whatever the file says *now*, not
-    a frozen copy embedded in an old Run. Scans the same enumerated
-    ``config/agents/*.yaml`` list every other agent-spec lookup here uses,
-    never a client-supplied path."""
+    """Resolve a spec's ``.name`` back to its current YAML file, so a
+    regression replay or applied fix acts on the live file, not a copy
+    frozen in an old Run."""
     for entry in list_agent_specs():
         path = _CONFIG_AGENTS_DIR / entry["id"]
         if load_agent_spec(path).name == agent_spec_name:
@@ -277,8 +235,8 @@ def _execute_run(
     sample_n: int,
     tactics_arg: str | None,
 ) -> None:
-    """The background-thread target: mirrors ``cli.py``'s ``_cmd_run`` wiring,
-    but reports failure via the store instead of letting an exception crash a
+    """The background-thread target: mirrors ``cli.py``'s run wiring, but
+    reports failure via the store instead of letting an exception crash a
     daemon thread silently."""
     try:
         load_settings()
@@ -337,13 +295,9 @@ def _execute_run(
 
 
 def _require_terminal_run(store: SqliteStore, run_id: str) -> Run:
-    """The export/lock/suggest-fix routes all read straight from the store
-    via ``load_bundle`` -- nodes/verdicts/clusters are only ever persisted
-    once a run finishes (see ``_execute_run``/``runner.py``'s ``_persist``),
-    so calling any of them against a still-``pending``/``running`` run
-    doesn't error, it just silently returns a near-empty report/bundle. That
-    reads as a broken export rather than "come back once it's done" -- this
-    turns it into a clear, explicit error instead."""
+    """Nodes/verdicts/clusters are only persisted once a run finishes, so
+    export/lock/suggest-fix against a still-running run would otherwise
+    silently return a near-empty bundle instead of a clear error."""
     run = store.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"No run found with id '{run_id}'.")
@@ -360,8 +314,8 @@ def _require_terminal_run(store: SqliteStore, run_id: str) -> Run:
 
 
 def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
-    """Build the dashboard app. ``db_path`` is fixed here, at process startup —
-    never accepted from a client request (see module docstring on trust)."""
+    """Build the dashboard app. ``db_path`` is fixed at process startup,
+    never accepted from a client request."""
     ensure_current_or_raise(db_path)
     with SqliteStore(db_path) as store:
         reconcile_interrupted_runs(store)
@@ -373,10 +327,8 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
         agent_specs = list_agent_specs()
         with SqliteStore(app.state.db_path) as store:
             recent_runs = store.list_runs()
-            # The Attack Tactics picker's initial render must match whatever
-            # get_personas_picker would return for the <select>'s own default
-            # (first) option -- otherwise the picker shown on page load is
-            # for the wrong agent until the user touches the dropdown.
+            # Must match what get_personas_picker returns for the <select>'s
+            # default option, or the picker is for the wrong agent on load.
             picker_context = (
                 _personas_picker_context(
                     load_agent_spec(_CONFIG_AGENTS_DIR / agent_specs[0]["id"]), store
@@ -393,12 +345,8 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                 "models": list_models(),
                 **picker_context,
             },
-            # The recent-runs list is a point-in-time snapshot; without this,
-            # navigating back to "/" (browser back/forward) can restore a
-            # cached copy from before a run finished instead of refetching,
-            # so newly completed runs silently don't show up until a manual
-            # reload. no-store also makes the page ineligible for the
-            # back/forward cache in the browsers that honor it (e.g. Chrome).
+            # Without no-store, browser back/forward can restore a cached
+            # snapshot from before a run finished, hiding newly completed runs.
             headers={"Cache-Control": "no-store"},
         )
 
@@ -493,10 +441,6 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             else:
                 run, tree, verdicts, clusters = load_bundle(store, run_id)
                 reliability = score_run(tree.nodes(), verdicts)
-                # Phase RE1: only meaningful once a run has actually finished
-                # and been clustered — a live run's clusters are always empty
-                # (see above), which would misreport every historical cluster
-                # as "resolved".
                 cross_run = load_cross_run_bundle(store, run, clusters, verdicts)
 
             locked = locked_cluster_ids(store, run.agent_spec.name)
@@ -535,9 +479,8 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     def get_run_reliability(
         request: Request, run_id: str, model: str = "severity_weighted"
     ) -> HTMLResponse:
-        """Phase C6's scoring-model picker: re-score this run's already-loaded
-        nodes/verdicts under a different ScoringModel and return the gauge
-        fragment re-rendered — never touches the persisted Run.final_score."""
+        """Re-score this run's already-loaded nodes/verdicts under a
+        different ScoringModel; never touches the persisted Run.final_score."""
         model_cls = _SCORING_MODELS.get(model)
         if model_cls is None:
             raise HTTPException(status_code=400, detail=f"Unknown scoring model '{model}'.")
@@ -565,10 +508,10 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     def post_llm_summary(
         request: Request, run_id: str, provider: str = Form("fake")
     ) -> HTMLResponse:
-        """Phase RE2's opt-in LLM rephrasing — only ever spends a real call
-        (network + cost) when a user explicitly clicks for it; the
-        deterministic summary above it is always shown for free."""
+        """Opt-in LLM rephrasing of the deterministic summary — only spends a
+        real call when the user explicitly clicks for it."""
         with SqliteStore(app.state.db_path) as store:
+            _require_terminal_run(store, run_id)
             run, tree, verdicts, clusters = load_bundle(store, run_id)
         reliability = score_run(tree.nodes(), verdicts)
         near_misses = near_miss_ranking(tree.nodes(), verdicts)
@@ -583,14 +526,11 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
 
     @app.get("/runs/{run_id}/export.html", response_class=HTMLResponse)
     def get_export_html(request: Request, run_id: str) -> HTMLResponse:
-        """Phase RE4: a static, self-contained HTML export — no htmx/SSE/
-        Alpine wiring (``run_id=None`` throughout suppresses every fragment's
-        interactive controls, e.g. the Lock/Suggest-Fix buttons and the
-        scoring-model picker), so it's safe to save or forward standalone.
-        "PDF export" is the browser's own Print-to-PDF on this same page
-        (see the "Print / Save as PDF" button + the print CSS in
-        ``_styles.html``) rather than a server-side PDF library — see the
-        build plan's RE4 notes on why."""
+        """A static, self-contained HTML export — ``run_id=None`` suppresses
+        every fragment's interactive controls (Lock/Suggest-Fix, the
+        scoring-model picker) so the page is safe to save or forward
+        standalone. "PDF export" is just the browser's own Print-to-PDF on
+        this page, not a server-side PDF library."""
         with SqliteStore(app.state.db_path) as store:
             _require_terminal_run(store, run_id)
             run, tree, verdicts, clusters = load_bundle(store, run_id)
@@ -710,26 +650,16 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        # Record both ends of this write as distinct versions (content-
-        # addressed — see `record_prompt_version`). The first-ever apply for
-        # an agent captures its original prompt as the baseline "Revision 1"
-        # in the same stroke; every later apply is a no-op on whichever side
-        # is already on file. A hosted deployment may give the person
-        # clicking this button no shell/git access to the server, so "git
-        # checkout" isn't a real safety net there — this is what actually
-        # lets them restore any past version, regardless of how it's
-        # deployed, including reapplying one they just undid.
+        # Records both ends of this write as distinct versions so any past
+        # version (including one just undone) stays restorable later.
         with SqliteStore(app.state.db_path) as store:
             record_prompt_version(store, agent_spec_name, previous_prompt)
             record_prompt_version(store, agent_spec_name, new_spec.system_prompt)
 
         if not request.headers.get("hx-request"):
-            # A plain (non-htmx) form post — the "Revert to this version"
-            # button on the regression page. Redirect rather than render a
-            # fragment: this is a full navigation, and redirecting means a
-            # page refresh afterward re-GETs instead of re-submitting the
-            # write, and the corpus page re-renders the history fresh from
-            # the store instead of an in-memory snapshot from before it.
+            # A plain (non-htmx) form post from the regression page's
+            # "Revert to this version" button — redirect so a refresh re-GETs
+            # instead of resubmitting the write.
             return RedirectResponse(
                 url=f"/agent-specs/{agent_spec_name}/regression", status_code=303
             )
@@ -778,11 +708,8 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             store.save_stress_profile(profile)
             picker_context = _personas_picker_context(agent_spec, store)
 
-        # Renders profile_editor.html (the standalone profile page's own
-        # target) plus an out-of-band personas_picker.html (the New Run
-        # form's Attack Tactics picker, if present in the requesting page's
-        # DOM) -- one route serves both surfaces without duplicating the
-        # generate-and-save logic above.
+        # Also renders an out-of-band personas_picker.html, updating the New
+        # Run form's tactics picker if it's present in the requesting page.
         return templates.TemplateResponse(
             request,
             "fragments/profile_generate_result.html",
@@ -825,14 +752,8 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
         rule_text: str = Form(...),
         rule_severity: str = Form(...),
     ) -> HTMLResponse:
-        """Promotes one candidate rule (from this agent's stress profile)
-        into a real, enforced rule on the agent spec's own YAML -- the
-        missing half of Phase RE-profile's review flow: generating and
-        editing candidates never wrote anything into the spec itself (see
-        ``config_writer.apply_candidate_rule``'s docstring); this is the
-        button that actually does. Applies whatever text/severity is
-        currently in the rule's own fields (via ``hx-include``), not
-        necessarily whatever was last saved."""
+        """Promotes one candidate rule from this agent's stress profile into
+        a real, enforced rule on the spec's own YAML."""
         if not rule_id.strip():
             raise HTTPException(status_code=400, detail="Give this rule an id before applying it.")
         try:
@@ -866,15 +787,10 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     async def post_apply_all_candidate_rules(
         request: Request, agent_spec_name: str
     ) -> HTMLResponse:
-        """Bulk sibling of ``post_apply_candidate_rule`` above: writes every
-        candidate rule currently in the section's own fields (via
-        ``hx-include``, saved or not) into the spec's real YAML in one pass.
-
-        A collision (this exact id already on the spec -- e.g. an earlier
-        session already applied a rule with identical text; see
-        ``reasoning/profiler.py``'s ``_rule_id``, which hashes on text so a
-        genuinely new rule can't collide) is skipped and reported rather than
-        aborting the whole batch, so one bad row never blocks the rest."""
+        """Bulk sibling of ``post_apply_candidate_rule``: writes every
+        candidate rule into the spec's YAML in one pass. A collision (id
+        already on the spec) is skipped and reported rather than aborting
+        the whole batch."""
         form = await request.form()
         rule_ids = form.getlist("rule_id")
         rule_texts = form.getlist("rule_text")

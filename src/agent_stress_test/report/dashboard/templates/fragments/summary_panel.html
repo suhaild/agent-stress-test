@@ -8,7 +8,7 @@
     {% if run_id %}
     <button type="button" hx-post="/runs/{{ run_id }}/summary/llm"
             hx-vals='{"provider": "{{ run_provider }}"}'
-            hx-target="#llm-summary-slot" hx-swap="innerHTML"
+            hx-target="#llm-summary-slot" hx-swap="innerHTML" hx-disabled-elt="this"
             class="btn-ghost text-xs mt-4">
       Generate AI Summary
     </button>

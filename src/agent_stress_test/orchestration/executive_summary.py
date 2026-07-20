@@ -1,13 +1,6 @@
-"""Executive summary layer (Phase RE2): a synthesized takeaway above the raw
-per-node/per-cluster data.
-
-Deterministic-first (see CLAUDE.md's Golden Rules): every function here is
-plain rules and math over already-computed ``ReliabilityReport``/``Cluster``/
-``Verdict``/``NearMiss`` data — no LLM involved. An LLM rephrasing of the
-deterministic summary text is opt-in and lives in ``reasoning/summary.py``'s
-``RunSummarizer`` instead, called only when a report surface explicitly asks
-for it (never automatically) — the same "deterministic tier always runs, LLM
-tier is opt-in" shape as the two-tier ``Judge``.
+"""Executive summary: a synthesized takeaway above the raw per-node/per-cluster
+data. Plain rules and math only — no LLM. An opt-in LLM rephrasing of this
+text lives in ``reasoning/summary.py``'s ``RunSummarizer``.
 """
 
 from dataclasses import dataclass
@@ -32,9 +25,8 @@ def _cluster_worst_severity(cluster: Cluster, verdicts: list[Verdict]) -> Severi
 
 @dataclass(frozen=True)
 class FixFirstItem:
-    """One ranked entry in the "fix this first" list — either a confirmed
-    failure cluster or a near-miss, on the same priority scale (see
-    ``fix_this_first``)."""
+    """One ranked entry in the "fix this first" list: either a confirmed
+    failure cluster or a near-miss, on the same priority scale."""
 
     kind: Literal["cluster", "near_miss"]
     label: str
@@ -51,16 +43,10 @@ def fix_this_first(
     *,
     limit: int = 10,
 ) -> list[FixFirstItem]:
-    """Confirmed failure clusters and near-misses, in ONE combined priority
-    order — "severity x cluster size" for a cluster (a big critical pattern
-    outranks a one-off minor nit), proximity alone for a near-miss (nothing
-    failed there yet, so its urgency IS how close it came). Both land on a
-    comparable scale without any separate normalization step: ``SEVERITY_WEIGHT``
-    and ``NearMiss.proximity`` already share the same [0, 1] range (see
-    ``orchestration/search.py``), so a near-miss's priority (at most 1.0)
-    only ever out-ranks a real cluster in the rare case that cluster is a
-    single minor/major node — a lone confirmed critical failure always wins.
-    """
+    """Confirmed failure clusters and near-misses, in one combined priority
+    order: severity x cluster size for a cluster, proximity alone for a
+    near-miss. Both share the same [0, 1] scale, so a near-miss only
+    outranks a cluster that's a single minor/major node."""
     items = []
     for cluster in clusters:
         severity = _cluster_worst_severity(cluster, verdicts)
@@ -100,9 +86,8 @@ class RuleCallout:
 
 
 def top_offending_rule(verdicts: list[Verdict]) -> RuleCallout | None:
-    """The rule (``scope="rule"`` only) with the most failing verdicts —
-    ties broken by worst severity, then rule id, for a stable pick. ``None``
-    when nothing failed."""
+    """The rule (``scope="rule"`` only) with the most failing verdicts.
+    Ties broken by worst severity, then rule id."""
     by_rule: dict[str, list[Verdict]] = {}
     for verdict in verdicts:
         if not verdict.passed and verdict.scope == "rule" and verdict.rule_id:
@@ -129,9 +114,8 @@ class PersonaCallout:
 
 
 def top_offending_persona(nodes: list[Node], verdicts: list[Verdict]) -> PersonaCallout | None:
-    """The tactic with the most nodes carrying at least one failing verdict
-    — ties broken by tactic name for a stable pick. ``None`` when nothing
-    failed, or every failing node is untagged (the search tree's root)."""
+    """The tactic with the most nodes carrying at least one failing verdict.
+    Ties broken by tactic name; ``None`` if every failing node is untagged."""
     failing_node_ids = {verdict.node_id for verdict in verdicts if not verdict.passed}
     by_tactic: dict[str, int] = {}
     for node in nodes:
@@ -161,9 +145,8 @@ def deterministic_summary(
     top_rule: RuleCallout | None,
     top_persona: PersonaCallout | None,
 ) -> RunSummary:
-    """A templated takeaway paragraph — no LLM call, so it's always shown by
-    default (see ``reasoning/summary.py``'s ``RunSummarizer`` for the opt-in
-    LLM rephrasing of this same text)."""
+    """A templated takeaway paragraph — no LLM call, so it's always shown
+    by default."""
     if not reliability.applicable:
         text = (
             f"Reliability not measured under the '{reliability.model_name}' model "

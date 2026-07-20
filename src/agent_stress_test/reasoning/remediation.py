@@ -1,10 +1,8 @@
 """Suggests a system-prompt fix for a confirmed rule violation.
 
-Deliberately scoped to ``system_prompt`` only: never ``rules`` (rewriting the
-rule you failed is "fixing" the test, not the agent) and never ``tools``
-(structural, not behavioral). Every suggestion is exactly that — a suggestion
-for a human to review and paste in themselves; nothing in this codebase
-writes it back to an AgentSpec automatically.
+Scoped to ``system_prompt`` only — never ``rules`` (that would be fixing the
+test, not the agent) or ``tools`` (structural, not behavioral). A human
+reviews and applies every suggestion; nothing here writes back automatically.
 """
 
 import json
@@ -46,11 +44,10 @@ class RemediationSuggestion:
 
 
 class RemediationSuggester:
-    """Proposes a system-prompt fix for a rule a target agent violated (Strategy).
+    """Proposes a system-prompt fix for a violated rule (Strategy).
 
-    Malformed or missing LLM output falls back to the prompt unchanged (never
-    invents a plausible-looking rewrite it can't stand behind) with a
-    zero-confidence rationale explaining the failure.
+    Malformed LLM output falls back to the prompt unchanged with a
+    zero-confidence rationale, rather than inventing a plausible rewrite.
     """
 
     def __init__(self, llm: LLMProvider) -> None:

@@ -1,10 +1,7 @@
 """Self-consistency scorer.
 
-Sample the target agent N times for the same conversation and measure how much
-the samples disagree, as a 0-1 instability score (higher = shakier = more worth
-probing). Disagreement is measured with a stdlib-only metric: the mean pairwise
-dissimilarity of the samples via difflib. Embedding/HDBSCAN-based clustering is
-deferred to Phase 8; this keeps the dependency list lean.
+Samples the target agent N times for the same conversation and measures the
+mean pairwise dissimilarity (via stdlib difflib) as a 0-1 instability score.
 """
 
 import re
@@ -27,11 +24,7 @@ def _similarity(a: str, b: str) -> float:
 
 
 def instability_score(samples: list[str]) -> float:
-    """Mean pairwise dissimilarity of the samples, in [0, 1].
-
-    0.0 means every sample agrees (stable); higher means more disagreement
-    (shakier). Fewer than two samples cannot disagree, so the score is 0.0.
-    """
+    """Mean pairwise dissimilarity of the samples, in [0, 1]; 0.0 if fewer than two."""
     normalized = [_normalize(sample) for sample in samples]
     n = len(normalized)
     if n < 2:
@@ -49,11 +42,8 @@ def instability_score(samples: list[str]) -> float:
 class ConsistencyScorer:
     """Samples the target N times and scores how much the samples disagree.
 
-    Calls the target itself (`TargetAgent.respond()`) N times on the same
-    conversation, rather than a side-channel LLM completion — this measures
-    the real target's actual reply variance no matter what backs it (a direct
-    LLM completion, a tool-using ReAct loop, or an HTTP endpoint), instead of
-    only being meaningful when the target happens to be LLM-backed.
+    Calls the target itself rather than a side-channel LLM completion, so it
+    measures the real target's variance regardless of what backs it.
     """
 
     def __init__(self, target: TargetAgent) -> None:

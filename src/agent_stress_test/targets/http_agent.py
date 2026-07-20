@@ -13,9 +13,7 @@ from agent_stress_test.targets.wire_protocol import _build_wire_payload, _parse_
 class HttpAgent(TargetAgent):
     """Wraps an HTTP/JSON endpoint as a TargetAgent.
 
-    Sends `{"messages": [...]}` and expects `{"reply": "..."}` back, with an
-    optional `"trace": [...]` list of step objects. A missing or null `trace`
-    is returned as `trace=None` — never fabricated.
+    Sends `{"messages": [...]}`, expects `{"reply": ..., "trace": [...]}` back.
     """
 
     def __init__(

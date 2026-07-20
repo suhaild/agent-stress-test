@@ -1,11 +1,9 @@
-"""Cross-run intelligence (Phase RE1) — reliability trend, run-over-run diff,
-and per-rule pass-rate history for one agent spec.
+"""Cross-run intelligence: reliability trend, run-over-run diff, and
+per-rule pass-rate history for one agent spec.
 
-Pure functions over already-loaded ``Run``/``Cluster``/``Verdict`` lists, same
-isolation contract as ``reliability.py`` and ``report/shared.py``: nothing
-here talks to a ``Store`` — fetching which runs/verdicts/clusters to feed in
-is ``composition.py``'s ``load_cross_run_bundle``'s job (mirroring how
-``load_bundle`` fetches a single run's tree for reporting).
+Pure functions over already-loaded ``Run``/``Cluster``/``Verdict`` lists —
+nothing here talks to a ``Store``; fetching what to feed in is the caller's
+job (``composition.py``'s ``load_cross_run_bundle``).
 """
 
 from dataclasses import dataclass, field
@@ -16,7 +14,7 @@ from agent_stress_test.models import Cluster, Run, Verdict
 
 @dataclass(frozen=True)
 class TrendPoint:
-    """One completed run's headline reliability score, for a trend line."""
+    """One completed run's score, for a trend line."""
 
     run_id: str
     started_at: datetime | None
@@ -24,13 +22,8 @@ class TrendPoint:
 
 
 def reliability_trend(runs: list[Run]) -> list[TrendPoint]:
-    """Oldest-to-newest ``Run.final_score`` for every completed run — the
-    same number ``Runner.run()`` persists at completion (always the
-    ``SeverityWeightedModel`` score, see ``orchestration/runner.py``), so
-    this needs no re-scoring pass over each historical run's nodes/verdicts.
-    Runs with no score yet (still running, or failed before scoring) are
-    skipped — there's nothing to plot for them.
-    """
+    """Oldest-to-newest ``Run.final_score`` for every completed run. Runs
+    with no score yet are skipped."""
     scored = [run for run in runs if run.final_score is not None]
     ordered = sorted(scored, key=lambda run: run.started_at or datetime.min)
     return [
@@ -40,11 +33,8 @@ def reliability_trend(runs: list[Run]) -> list[TrendPoint]:
 
 
 def previous_completed_run(current: Run, agent_runs: list[Run]) -> Run | None:
-    """The most recent OTHER completed run for the same agent, strictly
-    before ``current`` by ``started_at`` — the "before" half of a
-    before/after diff. ``agent_runs`` may be in any order and may include
-    ``current`` itself; both are handled here so callers can just pass
-    whatever ``Store.list_runs_for_agent`` returned."""
+    """The most recent other completed run for the same agent, strictly
+    before ``current`` by ``started_at``."""
     if current.started_at is None:
         return None
     earlier = [
@@ -76,12 +66,10 @@ def diff_against_previous(
     previous_run: Run | None,
     previous_clusters: list[Cluster],
 ) -> RunDiff:
-    """Which failure clusters are new, which resolved, and how the headline
-    score moved — clusters are compared by ``label`` (clustering re-derives
-    labels per run rather than carrying a stable id across runs, so label
-    text is the only meaningful join key). ``previous_run=None`` (no earlier
-    completed run for this agent yet) reports every current cluster as new
-    and no score delta, rather than guessing."""
+    """Which failure clusters are new, which resolved, and how the score
+    moved. Clusters are compared by ``label`` since clustering re-derives
+    labels each run rather than carrying a stable id. ``previous_run=None``
+    reports every current cluster as new with no score delta."""
     if previous_run is None:
         return RunDiff(
             previous_run_id=None,
@@ -123,11 +111,9 @@ def _pass_rate_by_rule(verdicts: list[Verdict]) -> dict[str, float]:
 def rule_pass_rate_history(
     current_verdicts: list[Verdict], historical_verdicts: list[Verdict]
 ) -> list[RulePassRate]:
-    """Per rule (``scope="rule"`` only — tool/task/conversation verdicts
-    aren't keyed comparably across runs), this run's pass rate against the
-    aggregate across every other completed run for the same agent. A rate is
-    ``None`` where that rule simply wasn't exercised on that side, rather
-    than a misleading 0%/100%. Sorted by rule id for a stable render order."""
+    """Per rule (``scope="rule"`` only), this run's pass rate against the
+    aggregate across this agent's other completed runs. ``None`` where a
+    rule wasn't exercised on that side, rather than a misleading 0%/100%."""
     current_rates = _pass_rate_by_rule(current_verdicts)
     historical_rates = _pass_rate_by_rule(historical_verdicts)
     rule_ids = sorted(set(current_rates) | set(historical_rates))

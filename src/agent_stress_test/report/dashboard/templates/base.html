@@ -17,13 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-  <!-- Tailwind's dynamic-JIT CDN build can't be given an integrity hash (it
-       fetches/compiles utility CSS on the fly, so there's no one fixed
-       response to pin) — accepted, see RE-DEP in the build plan. Every other
-       script below is pinned to an exact version and an SRI hash generated
-       from that exact file (openssl dgst -sha384 -binary FILE | openssl
-       base64 -A) — never hand-written, since a fabricated hash just breaks
-       loading instead of guarding anything. -->
+  <!-- Tailwind's JIT CDN build can't be given an SRI hash (compiled on the fly); every other script below is pinned + hashed. -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"
           integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
@@ -78,9 +72,7 @@
     document.addEventListener('alpine:init', () => {
       Alpine.store('toasts', []);
 
-      // Shared behavior for the model pickers (single-select, value + label)
-      // and the tactics picker (multi-select) in run_form.html — registered
-      // once here so any future hx-swapped picker can reuse them too.
+      // Shared by the model pickers (single-select) and tactics picker (multi-select).
       Alpine.data('dropdown', (initial = {}) => ({
         open: false,
         value: initial.value,
@@ -91,13 +83,8 @@
         selected: initial.selected || [],
       }));
     });
-    // Every future hx-swapped widget becomes Alpine-reactive automatically —
-    // initTree only scans the swapped subtree, so nodes htmx didn't touch
-    // (already initialized) are left alone; no double-init.
+    // Makes every hx-swapped widget Alpine-reactive without double-initializing existing nodes.
     document.body.addEventListener('htmx:afterSettle', e => Alpine.initTree(e.detail.elt));
-    // Reads the live theme's CSS custom properties so a Chart.js instance
-    // (see fragments/cross_run_section.html) never hardcodes a color that'd
-    // drift from the light/dark theme toggle above.
     function chartThemeColors() {
       var style = getComputedStyle(document.documentElement);
       var read = function (name) { return style.getPropertyValue(name).trim(); };
@@ -131,12 +118,8 @@
       pushToast('Could not reach the server. Is the dashboard still running?', 'error');
     });
     document.body.addEventListener('htmx:sseError', function (evt) {
-      // htmx's SSE extension can't tell "the server finished and closed the
-      // stream on purpose" apart from "the connection actually broke" — both
-      // fire onerror and it retries forever either way. If the run this
-      // stream belongs to is already terminal, treat this as the expected,
-      // intentional close: stop it from retrying instead of surfacing an
-      // error toast for something that isn't actually a problem.
+      // htmx's SSE extension can't tell a deliberate server close from a real
+      // break, and retries either way -- skip the error toast if already terminal.
       var elt = evt.target;
       var badge = document.querySelector('[data-status]');
       var status = badge ? badge.getAttribute('data-status') : null;

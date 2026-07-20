@@ -21,13 +21,10 @@ from agent_stress_test.models import (
 
 
 class UsageMeter:
-    """A live, thread-safe spend accumulator one ``LLMProvider`` instance
-    writes into as a side effect of each real call (see
-    ``LiteLLMProvider._record_usage``/``FakeLLMProvider.complete``) — never
-    part of the abstract ``complete()``/``sample_n()`` contract itself.
-    ``.total()`` returns an immutable ``TokenUsage`` snapshot, which is what
-    ``Runner.run()`` reads once a run finishes and attaches to ``Run.usage``.
-    """
+    """A live, thread-safe spend accumulator each ``LLMProvider`` writes into
+    as a side effect of each real call — not part of the abstract
+    ``complete()``/``sample_n()`` contract itself. ``.total()`` returns an
+    immutable ``TokenUsage`` snapshot."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -45,9 +42,7 @@ class UsageMeter:
         total_tokens: int = 0,
         cost_usd: float | None,
     ) -> None:
-        """``cost_usd=None`` means a real cost couldn't be computed for this
-        call (see the caller) — recorded as "pricing unavailable", not
-        silently folded in as free."""
+        """``cost_usd=None`` records "pricing unavailable", not a silent free call."""
         with self._lock:
             self._prompt_tokens += prompt_tokens
             self._completion_tokens += completion_tokens
@@ -69,15 +64,9 @@ class UsageMeter:
 
 
 class ProviderError(Exception):
-    """Base for errors an ``LLMProvider`` raises out of ``complete()``/
-    ``sample_n()``/``complete_with_tools()`` — carries a human-readable
-    message plus a ``retryable`` flag, so a caller (CLI, dashboard) can
-    react sensibly without importing or inspecting a raw provider SDK
-    exception (e.g. litellm's, which ``LiteLLMProvider`` translates into
-    this hierarchy — see ``providers/litellm_provider.py``'s
-    ``_classify_error``). ``retryable=False`` here since an unclassified
-    provider error is treated as fatal by default; the specific subclasses
-    below override it where retrying is actually sensible.
+    """Base for errors an ``LLMProvider`` raises, carrying a ``retryable``
+    flag so a caller can react without inspecting a raw provider SDK
+    exception. Defaults to fatal; subclasses override where retrying makes sense.
     """
 
     retryable: bool = False
@@ -121,13 +110,9 @@ class LLMProvider(ABC):
 
 
 class ToolCallingLLM(Protocol):
-    """The native tool-calling capability ``ProviderAgent`` needs from its
-    backing provider — narrower than the full ``LLMProvider`` port, since
-    only a provider that supports real tool-calling (today: ``LiteLLMProvider``)
-    can offer it. A structural ``Protocol`` rather than an ABC so a duck-typed
-    test double (see ``tests/test_targets.py``'s ``_FakeToolCallingProvider``)
-    satisfies it without inheriting anything.
-    """
+    """The native tool-calling capability ``ProviderAgent`` needs — narrower
+    than ``LLMProvider``. A structural ``Protocol`` (not an ABC) so a
+    duck-typed test double can satisfy it without inheriting anything."""
 
     def complete_with_tools(
         self, messages: list[Message], tools: list[dict]
@@ -141,11 +126,8 @@ class TargetAgent(ABC):
     def respond(self, conversation: list[Message]) -> AgentResponse: ...
 
     def capabilities(self) -> Capabilities:
-        """What this adapter actually supports. Defaults to the safest
-        possible claim — nothing beyond plain stateless ``respond()`` — so an
-        adapter that never overrides this can't accidentally overclaim;
-        adapters that genuinely support more (e.g. real tool-calling)
-        override it."""
+        """Defaults to the safest claim (plain stateless ``respond()`` only)
+        so an adapter can't accidentally overclaim without overriding this."""
         return Capabilities()
 
 

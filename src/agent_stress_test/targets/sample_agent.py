@@ -7,16 +7,7 @@ from agent_stress_test.targets.react_parsing import parse_react_completion
 
 
 class SampleAgent(TargetAgent):
-    """A general tool-calling / ReAct-style demo agent driven by an LLMProvider.
-
-    Describes its tools and rules to the LLM via its system prompt and asks it
-    to narrate its reasoning in a recognizable Thought/Action/Observation/Final
-    Answer format, which is then parsed into a trace — there are no tool
-    backends to invoke in this bundled demo, so the LLM narrates rather than
-    actually calling anything. See ``AdvancedSampleAgent``
-    (``sample_agent_advanced.py``) for a harder sibling that executes tools
-    for real against an in-memory fake backend.
-    """
+    """A ReAct-style demo agent: narrates Thought/Action/Observation/Final Answer, no real tool execution."""
 
     def __init__(self, agent_spec: AgentSpec, llm: LLMProvider) -> None:
         self._agent_spec = agent_spec

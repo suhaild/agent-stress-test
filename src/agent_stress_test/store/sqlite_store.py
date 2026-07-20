@@ -1,11 +1,8 @@
 """Store port implementation (SQLite) — the Repository.
 
-SQLite is an implementation detail hidden entirely behind the ``Store`` port:
-callers only ever pass and receive ``Run``/``Node``/``Verdict``/``Cluster``
-models, never rows or JSON. Each entity is persisted as one row holding its
-exact Pydantic ``model_dump_json()``; reload validates that JSON straight back
-into the model, so every field — nested ``AgentSpec``, message lists, tz-aware
-datetimes, floats — round-trips faithfully without brittle column mapping.
+Each entity is persisted as one row holding its exact Pydantic
+``model_dump_json()``; reload validates that JSON straight back into the
+model, so every field round-trips faithfully without brittle column mapping.
 """
 
 import sqlite3
@@ -118,14 +115,9 @@ class SqliteStore(Store):
         return [Run.model_validate_json(row[0]) for row in rows]
 
     def list_runs_for_agent(self, agent_spec_name: str, limit: int = 50) -> list[Run]:
-        """Most-recent-first runs for one agent spec — Phase RE1's cross-run
-        intelligence (trend/diff/pass-rate). ``agent_spec_name`` isn't its own
-        indexed column (unlike ``regression_cases``/``system_prompt_versions``
-        — those are keyed on it from the start); ``runs`` only ever stored
-        ``(id, data)`` (see ``_SCHEMA``), and at this project's scale a full
-        scan + filter in Python is simpler than a migration to add and
-        backfill a column for it.
-        """
+        # agent_spec_name isn't an indexed column on `runs` (unlike
+        # regression_cases/system_prompt_versions) — a full scan + filter in
+        # Python is simpler than a schema migration at this project's scale.
         rows = self._conn.execute("SELECT data FROM runs ORDER BY rowid DESC").fetchall()
         matching = (Run.model_validate_json(row[0]) for row in rows)
         return [run for run in matching if run.agent_spec.name == agent_spec_name][:limit]
@@ -194,8 +186,7 @@ class SqliteStore(Store):
         )
 
     def get_system_prompt_versions(self, agent_spec_name: str) -> list[SystemPromptVersion]:
-        # Most-recent-first: rowid grows with insertion order, and versions
-        # are only ever inserted, never updated in place.
+        # rowid DESC works because versions are only ever inserted, never updated.
         rows = self._conn.execute(
             "SELECT data FROM system_prompt_versions WHERE agent_spec_name = ? ORDER BY rowid DESC",
             (agent_spec_name,),
@@ -212,9 +203,7 @@ class SqliteStore(Store):
         )
 
     def get_stress_profile(self, agent_spec_name: str) -> StressProfile | None:
-        # One live profile per agent: the most recently saved row. Editing
-        # saves back to the same id (in place); regenerating mints a new one
-        # and this always surfaces whichever is newest.
+        # One live profile per agent: the most recently saved row.
         row = self._conn.execute(
             "SELECT data FROM stress_profiles WHERE agent_spec_name = ? ORDER BY rowid DESC LIMIT 1",
             (agent_spec_name,),

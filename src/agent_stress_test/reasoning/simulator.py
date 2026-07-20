@@ -1,18 +1,10 @@
 """Adversarial user simulator + tactic library.
 
-Given the conversation so far and a chosen tactic, the simulator produces the
-next adversarial *user* message. Tactics form a Strategy library (each a named
-strategy behind the `Tactic` interface) held in a registry, so a new tactic can
-be registered without changing the simulator.
-
-Most tactics need an LLM to react to what was actually said (e.g.
-self-contradiction has to find something specific to contradict), so they
-build a prompt via `build_prompt()` and go through the injected LLMProvider.
-A few tactics don't depend on conversation content at all (a hostile customer,
-an impatient one, "confirm that's still true" reads the same regardless of
-context) — those override `canned_message()` to return deterministic,
-template-based text with no LLM call at all, cutting real cost with no loss of
-adversarial quality for that tactic.
+Given the conversation so far and a chosen tactic, produces the next
+adversarial user message. Tactics are a Strategy library registered by name;
+most build an LLM prompt via `build_prompt()`, but tactics whose framing
+doesn't depend on conversation content override `canned_message()` to skip
+the LLM call entirely.
 """
 
 from abc import ABC, abstractmethod
@@ -30,11 +22,8 @@ _SIMULATOR_SYSTEM = (
 def _adversarial_prompt(
     conversation: list[Message], marker: str, instruction: str
 ) -> list[Message]:
-    """Assemble the simulator prompt: shared framing, prior context, then directive.
-
-    The tactic directive is placed last so it drives the model's next message
-    (and, under the deterministic fake provider, is echoed back for testing).
-    """
+    """Directive goes last so it drives the model's next message (and, under
+    the fake provider, is echoed back for tests)."""
     directive = Message(role="user", content=f"{marker} {instruction}")
     # Constant across every simulate() call — a prime prompt-caching breakpoint.
     system = Message(role="system", content=_SIMULATOR_SYSTEM, cache=True)
@@ -51,20 +40,12 @@ class Tactic(ABC):
     def build_prompt(self, conversation: list[Message]) -> list[Message]: ...
 
     def canned_message(self, conversation: list[Message]) -> Message | None:
-        """A deterministic, non-LLM user message, or None to use `build_prompt`.
-
-        Overridden only by tactics whose adversarial framing doesn't depend on
-        conversation content; the default always defers to the LLM.
-        """
+        """Deterministic non-LLM message, or None to fall back to `build_prompt`."""
         return None
 
 
 def _pick_template(conversation: list[Message], templates: list[str]) -> str:
-    """Deterministically rotate through canned phrasings by conversation length.
-
-    Not `random` — a fixed index keeps runs reproducible (needed for the
-    end-to-end determinism test) while still varying the phrasing by depth.
-    """
+    """Rotates templates by conversation length, not randomly, so runs stay reproducible."""
     return templates[len(conversation) % len(templates)]
 
 
@@ -199,10 +180,7 @@ def default_registry() -> TacticRegistry:
 
 
 class Simulator:
-    """Produces the next adversarial user message for a chosen tactic.
-
-    Provider-agnostic: it only uses the injected LLMProvider's `complete()`.
-    """
+    """Produces the next adversarial user message for a chosen tactic."""
 
     def __init__(self, llm: LLMProvider, registry: TacticRegistry | None = None) -> None:
         self._llm = llm

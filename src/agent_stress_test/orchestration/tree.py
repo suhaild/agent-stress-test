@@ -1,20 +1,11 @@
-"""Conversation tree structure — the Blackboard.
+"""Conversation tree structure — the Blackboard the simulator, target, judge,
+and search collaborate through instead of calling each other directly.
 
-The tree is the shared knowledge space the workers collaborate through: the
-simulator writes probes (as user messages on new nodes), the target writes
-replies, the judge writes verdicts, and the search reads scores/verdicts to
-pick the next node to expand. Components never call each other directly; they
-read and write here. This module is a pure data structure — it imports only
-the data models and holds no provider, port, or search logic.
-
-The dashboard's live view reads a run's tree from a different thread than the
-one the search is writing it from (see ``report/dashboard/server.py``), so
-every access below takes ``_lock``. A plain ``dict``/``list`` mutation is not
-atomic across bytecode boundaries in CPython — a reader iterating
-``dict.values()`` while a writer inserts a key can raise ``RuntimeError:
-dictionary changed size during iteration``. An ``RLock`` (not a plain
-``Lock``) is required because some methods below call other locked methods on
-``self``.
+The dashboard reads a run's tree from a different thread than the one the
+search writes it from, so every access below takes ``_lock`` — a plain
+``dict``/``list`` mutation isn't atomic across bytecode boundaries in
+CPython. An ``RLock`` (not a plain ``Lock``) is required because some
+methods below call other locked methods on ``self``.
 """
 
 import threading
@@ -53,21 +44,11 @@ class ConversationTree:
             return node
 
     def attach_verdicts(self, node_id: str, verdicts: list[Verdict]) -> None:
-        """Record the verdicts a judge produced for a node (a blackboard write).
-
-        Accumulates rather than replaces: a node is normally judged once, but
-        a conversation-level judge (Phase C2) attaches its verdicts to a
-        conversation's LEAF node in a *second* call, after that node's own
-        per-turn verdicts are already recorded (see
-        ``DeepEvalConversationSearch._ingest``) — accumulating means that
-        second call adds to the leaf's verdicts instead of wiping them out.
-
-        Also points ``node.verdict_id`` at the first failing verdict the node
-        ever received, if any, so a failing node carries a direct handle to
-        its failure — only set once (a later call with no failures of its own
-        leaves an earlier pointer alone; this is a plain attribute assignment
-        on an already-defined, nullable field, no model change).
-        """
+        """Record the verdicts a judge produced for a node (a blackboard
+        write). Accumulates rather than replaces — a conversation-level
+        judge attaches a second batch to a leaf node that already holds its
+        own per-turn verdicts. Also sets ``node.verdict_id`` to the first
+        failing verdict ever received, once only."""
         with self._lock:
             if node_id not in self._nodes:
                 raise KeyError(f"Unknown node {node_id}.")

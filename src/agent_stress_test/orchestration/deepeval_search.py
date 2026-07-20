@@ -1,21 +1,11 @@
-"""DeepEval-conversation-driven search strategy — the new default engine.
+"""Default search strategy: runs one full DeepEval-simulated conversation per
+persona against the target, then ingests the resulting turns into the tree
+as a linear chain, judged (and optionally consistency-scored) per node.
 
-Replaces the old per-node judge-driven tactic branching
-(``GreedyBestFirstSearch``, see ``search.py``, kept fully intact for direct
-use/testing) with running one full DeepEval-simulated conversation per
-persona (a ``ConversationalGolden`` — see
-``reasoning/deepeval_simulator.py``) against the target, then ingesting the
-resulting turns into the tree as a linear chain, judged (and, optionally,
-consistency-scored) exactly the way ``GreedyBestFirstSearch`` already does
-per node. Each persona is its own root-to-leaf branch: DeepEval's
-``ConversationSimulator`` always starts a conversation fresh from its own
-persona's opening line, so — unlike the old strategy — there's no single
-shared root turn for personas to branch off of.
-
-Optionally (Phase C2), an injected ``ConversationJudge`` also scores each
-persona's WHOLE chain once it's fully ingested — a path-level judgment
-alongside the per-node one — with its verdicts attached to the chain's leaf
-node (see ``_ingest``).
+Each persona starts its own fresh conversation, so there's no single shared
+root turn across personas (unlike ``GreedyBestFirstSearch`` in ``search.py``).
+An optional ``ConversationJudge`` can also score each persona's whole chain
+once ingested, attaching its verdicts to the chain's leaf node.
 """
 
 from agent_stress_test.models import AgentResponse, Message, Node, Verdict
@@ -35,22 +25,12 @@ class DeepEvalConversationSearch(SearchStrategy):
     """Runs one full simulated conversation per persona and ingests each
     into the tree.
 
-    ``budget`` here means how many user turns each persona's conversation
-    runs for (DeepEval's ``max_user_simulations``), not a branch-expansion
-    count — a different unit than ``GreedyBestFirstSearch``'s ``budget``,
-    despite sharing the same ``SearchStrategy.search()`` signature.
-    ``seed_messages`` is accepted (required by that shared interface) but
-    unused: each persona supplies its own opening line via its own scenario,
-    there's no fixed seed turn to start from.
-
-    Every node this strategy creates carries its persona name in
-    ``Node.tactic`` (the field predates this engine, back when a node's
-    branch was always a bundled tactic — see ``search.py``'s
-    ``GreedyBestFirstSearch``). The bundled personas happen to reuse the same
-    5 names as the tactic registry, but a profile-sourced persona (see
-    ``extra_personas`` below) is a genuinely distinct name with no
-    corresponding tactic — either way, ``Node.tactic`` here always holds
-    whichever persona produced that node.
+    ``budget`` means turns per persona conversation (DeepEval's
+    ``max_user_simulations``), not a branch-expansion count, despite
+    sharing ``SearchStrategy.search()``'s signature with
+    ``GreedyBestFirstSearch``. ``seed_messages`` is accepted but unused —
+    each persona supplies its own opening line. ``Node.tactic`` holds the
+    persona name for every node this strategy creates.
     """
 
     def __init__(
@@ -65,21 +45,14 @@ class DeepEvalConversationSearch(SearchStrategy):
         extra_personas: dict[str, object] | None = None,
         conversation_judge: ConversationJudge | None = None,
     ) -> None:
-        """``extra_personas`` merges in additional name -> ConversationalGolden
+        """``extra_personas`` merges additional name -> ConversationalGolden
         entries beyond the bundled ``PERSONAS`` dict (e.g. an agent's own
-        approved ``StressProfile`` personas — see ``runner.py``'s
-        ``build_runner()``, which converts them via
-        ``reasoning/profiler.py``'s ``to_conversational_golden``). Kept
-        loosely typed here (not ``ConversationalGolden``) so this module
-        never needs to import ``deepeval`` itself — it only ever holds these
-        values opaquely and hands them to ``simulate_personas``, exactly like
-        it already does with the imported ``PERSONAS`` dict.
+        approved ``StressProfile`` personas). Kept loosely typed (not
+        ``ConversationalGolden``) so this module never needs to import
+        ``deepeval`` itself.
 
-        ``conversation_judge`` (Phase C2), when given, scores each persona's
-        WHOLE conversation once it's fully ingested — a different unit of
-        judgment than ``judge``, which scores each node/turn as it's created.
-        Its verdicts attach to the conversation's leaf node (see ``_ingest``).
-        Left ``None`` (the default), no conversation-level judging happens.
+        ``conversation_judge``, when given, scores each persona's whole
+        conversation once ingested, separately from the per-node ``judge``.
         """
         self._target = target
         self._sim_provider = sim_provider
@@ -120,11 +93,9 @@ class DeepEvalConversationSearch(SearchStrategy):
         failures: list[Verdict],
         golden: object | None = None,
     ) -> int:
-        """Convert one persona's flat, alternating user/assistant Turn list
-        into a linear chain of judged Nodes committed onto the tree, then (if
-        a conversation-level judge is wired) judge the WHOLE chain once and
-        attach those verdicts to its leaf node — the chain's last node, whose
-        ``tree.path_to_root()`` reconstructs exactly the conversation judged."""
+        """Convert one persona's flat, alternating user/assistant turns into
+        a linear chain of judged nodes, then (if a conversation-level judge
+        is wired) judge the whole chain and attach verdicts to its leaf."""
         conversation: list[Message] = []
         parent_id: str | None = None
         created = 0

@@ -1,13 +1,4 @@
-"""The dashboard's live-run registry and SSE event scheduler.
-
-Owns the in-process registry of in-progress runs (so the live failure feed
-has something to read before anything reaches the store — ``server.py``
-registers/deregisters a run's ``ConversationTree`` here, this module and
-``server.py``'s own routes both read it) and the panel-cadence machinery that
-turns polling ticks into server-sent events. No HTTP/template routing here —
-that stays in ``server.py``; this module only needs a run id, a db path, and
-an already-built ``Jinja2Templates`` to render fragments with.
-"""
+"""The dashboard's live-run registry and SSE event scheduler."""
 
 import threading
 import time
@@ -31,24 +22,16 @@ from agent_stress_test.report.shared import (
 )
 from agent_stress_test.store.sqlite_store import SqliteStore
 
-# Registered by the request thread the instant a run starts, before the
-# background thread is even spawned, so the SSE endpoint never has to guard
-# against "not registered yet". ``GreedyBestFirstSearch.search()`` mutates
-# each tree in place from the run's own thread while this module reads it
-# from the request-serving threadpool; ``ConversationTree`` guards every
-# access with its own lock (see tree.py) so that read/write race is safe.
+# Registered before the background thread is spawned, so the SSE endpoint
+# never has to guard against "not registered yet". The run's own thread
+# mutates each tree in place while this module reads it from the request
+# threadpool; ConversationTree's own lock (tree.py) makes that race safe.
 live_trees: dict[str, ConversationTree] = {}
 live_trees_lock = threading.Lock()
 
-# Which failures have already been pushed to the client, keyed by run id and
-# kept for the run's lifetime -- NOT scoped to one SSE connection. The failure
-# feed appends via "beforeend" (see run.html), so if this were per-connection,
-# a dropped/auto-reconnected EventSource (network blip, idle proxy timeout --
-# htmx's SSE extension retries by default) would start a fresh empty `seen`
-# set and replay every already-shown failure as a second, visually duplicate
-# card. Sharing this set across reconnects for the same run_id makes a
-# reconnect resume instead of replaying the backlog. Popped once the run goes
-# terminal (see stream_run_events) so it doesn't leak across runs.
+# Kept per run_id, not per SSE connection: the failure feed only appends, so
+# a dropped/reconnected EventSource with a fresh `seen` set would replay the
+# whole backlog as duplicate cards. Popped on terminal in stream_run_events.
 _seen_failures_lock = threading.Lock()
 _seen_failures_by_run: dict[str, set[str]] = {}
 
@@ -59,8 +42,7 @@ def _seen_failures_for(run_id: str) -> set[str]:
 
 
 def locked_cluster_ids(store: SqliteStore, agent_spec_name: str) -> set[str]:
-    """Cluster ids already promoted into the regression corpus — so the Lock
-    button can show "locked" instead of silently minting duplicate cases."""
+    """Cluster ids already promoted into the regression corpus."""
     return {case.source_cluster_id for case in store.get_regression_cases(agent_spec_name)}
 
 
@@ -71,17 +53,15 @@ def _sse(event: str, html: str) -> str:
 
 @dataclass
 class _EventTick:
-    """One poll of the live loop's state, built once per iteration and handed
-    to every panel's cadence/context callables so they all see a consistent
-    snapshot (the tree can otherwise keep growing mid-iteration)."""
+    """One poll's state, built once and shared by every panel so they all see
+    a consistent snapshot instead of a tree that grew mid-iteration."""
 
     tree: ConversationTree | None
     node_count: int
     run: Run | None
     status: str
     is_terminal: bool
-    # Populated only when is_terminal — the persisted, final version of the
-    # same data the terminal panels (reliability/clusters/transcripts) render.
+    # Populated only when is_terminal.
     final_tree: ConversationTree | None = None
     final_verdicts: list[Verdict] = field(default_factory=list)
     ranked_clusters: list[dict] = field(default_factory=list)
@@ -93,21 +73,15 @@ class _EventTick:
 
 @dataclass
 class _LivePanel:
-    """One entry in the live loop's registry: what event to push, which
-    template renders it, when it fires (``cadence``), and what to render it
-    with (``context_builder``). Adding a new live panel later is exactly
-    "append one descriptor here" — the loop below has no per-panel branches,
-    so a panel left out of this list can never accidentally end up in the
-    live loop."""
+    """One descriptor per pushed event: template, firing condition
+    (``cadence``), and its render context (``context_builder``)."""
 
     event: str
     template: str
     cadence: Callable[[_EventTick], bool]
     context_builder: Callable[[_EventTick], dict[str, Any] | list[dict[str, Any]]]
-    # Only the failure panel needs this: each new failure_row.html render is
-    # prefixed with an out-of-band delete of the feed's "No failures yet."
-    # placeholder (a beforeend swap only ever appends, so it never clears
-    # that placeholder on its own).
+    # Failure panel only: a beforeend swap never clears the "No failures yet"
+    # placeholder on its own, so this prefixes an out-of-band delete of it.
     decorate: Callable[[str], str] | None = None
 
 
@@ -140,24 +114,17 @@ def _build_event_tick(run_id: str, db_path: str) -> _EventTick:
 
 
 def _make_live_panels(run_id: str) -> list[_LivePanel]:
-    """Build this run's panel registry. Bound to closures over a few
-    trackers. ``last_node_count``/``last_status`` are per-connection (safe to
-    replay on reconnect -- both panels swap via innerHTML, so re-sending the
-    same state just re-renders it, not duplicates it). ``seen`` is shared
-    across reconnects for this run id (see ``_seen_failures_for``) since the
-    failure panel appends instead of replacing."""
+    """Build this run's panel registry, closing over per-connection trackers
+    (``last_node_count``/``last_status``, safe to replay on reconnect since
+    those panels swap via innerHTML) and the cross-reconnect ``seen`` set."""
     seen = _seen_failures_for(run_id)
     last_node_count = 0
     last_status: str | None = None
 
     def reliability_live_cadence(tick: _EventTick) -> bool:
         nonlocal last_node_count
-        # The gauge's initial render is a snapshot from whenever the page was
-        # loaded; without this, it never moves again until the one terminal
-        # push below, so a run can sit there reading 100% (or whatever the
-        # very first node scored) for its entire duration. Re-score and push
-        # every time the live tree gains a node, so it tracks the run instead
-        # of a first-paint snapshot.
+        # Re-score on every new node so the gauge tracks the run instead of
+        # freezing at its first-paint snapshot until the terminal push.
         if tick.tree is None or tick.node_count == last_node_count:
             return False
         last_node_count = tick.node_count
@@ -259,26 +226,17 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
             decorate=lambda html: '<div id="no-failures" hx-swap-oob="delete"></div>' + html,
         ),
         _LivePanel("status", "fragments/status_badge.html", status_cadence, status_context),
-        # Terminal-only: fire once, together, the instant the run finishes.
         _LivePanel(
             "reliability", "fragments/reliability_gauge.html",
             terminal_cadence, reliability_final_context,
         ),
         _LivePanel("clusters", "fragments/cluster_table.html", terminal_cadence, clusters_context),
-        # Representative Transcripts is a top-level block, not swapped by id
-        # like the gauge/cluster table above — clustering (and thus which
-        # nodes are "representative") only exists once the run is done, so
-        # without this push the section stays absent from the DOM until a
-        # full page reload re-renders it from scratch.
+        # A top-level block, not swapped by id like the gauge/cluster table —
+        # needs an explicit push or it stays absent from the DOM until reload.
         _LivePanel(
             "transcripts", "fragments/transcripts_section.html",
             terminal_cadence, transcripts_context,
         ),
-        # Near-misses and conversation-level verdicts (Phase C6) are also
-        # terminal-only, same reasoning as clusters/transcripts above: a
-        # conversation verdict only attaches once its whole persona chain
-        # finishes, and re-ranking near-misses mid-run would churn the list
-        # on every node instead of settling once, at the end.
         _LivePanel(
             "near-misses", "fragments/near_miss_panel.html",
             terminal_cadence, near_misses_context,
@@ -287,26 +245,18 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
             "conversation-verdicts", "fragments/conversation_verdicts_section.html",
             terminal_cadence, conversation_verdicts_context,
         ),
-        # Phase RE1: also terminal-only — "vs. previous run" and the pass-rate
-        # history only mean something once this run's own clusters exist.
         _LivePanel(
             "cross-run",
             "fragments/cross_run_section.html",
             terminal_cadence,
             cross_run_context,
         ),
-        # Phase RE2: terminal-only too, same reason as clusters/near-misses
-        # above — "fix this first" ranks confirmed clusters alongside
-        # near-misses, both of which only exist once the run is done.
         _LivePanel(
             "summary",
             "fragments/summary_panel.html",
             terminal_cadence,
             summary_context,
         ),
-        # Phase RE3: terminal-only for the same reason as everything else in
-        # this block — a live tree/rule-coverage view would just churn on
-        # every node (explicitly out of scope for the RE3 timebox).
         _LivePanel(
             "rule-coverage",
             "fragments/rule_coverage_section.html",

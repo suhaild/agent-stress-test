@@ -1,10 +1,4 @@
-"""System-prompt diffing and content-addressed version history — the
-dashboard's "suggest a fix, show a diff, let a human apply/revert it" flow.
-
-Pure text logic plus one ``Store``-backed history query; no HTTP/template
-coupling, so it's usable (and testable) independently of ``server.py``'s
-route handlers.
-"""
+"""System-prompt diffing and content-addressed version history."""
 
 import difflib
 
@@ -17,32 +11,18 @@ _SENTENCE_SEGMENTER = pysbd.Segmenter(language="en", clean=False)
 
 
 def _normalize_for_diff(text: str) -> list[str]:
-    """Split text into sentences for diffing, ignoring incidental line-wrap
-    width. A raw line-based diff is misleading here: the YAML's system_prompt
-    is hard-wrapped at a fixed column width, but an LLM's suggested
-    replacement rarely reproduces that exact wrap point — so a plain
-    ``str.splitlines()`` diff shows the whole paragraph as removed-and-re-added
-    even when only one sentence actually changed. Collapsing whitespace first
-    (so wrapping can't matter) and segmenting by sentence gives a diff that
-    tracks meaning, not incidental formatting.
-    """
+    """Segment by sentence, not line: the YAML's hard-wrap column rarely
+    survives an LLM rewrite, so a line diff would flag whole unchanged
+    paragraphs as rewritten."""
     collapsed = " ".join(text.split())
     return [s.strip() for s in _SENTENCE_SEGMENTER.segment(collapsed) if s.strip()]
 
 
 def diff_blocks(old_text: str, new_text: str) -> list[dict]:
-    """Groups a unified diff into template-ready blocks for a browser
-    audience, not a `git diff` reader: each contiguous run of unchanged
-    sentences becomes one ``{"kind": "context", "text": ...}`` row (labeled
-    "unchanged" in the template — shown only for orientation, so it's clear
-    it's surrounding prompt text, not part of the edit), and each run of
-    removed/added sentences becomes one ``{"kind": "change", "previous":
-    [...], "suggested": [...]}`` pair, labeled "previous"/"suggested"
-    explicitly rather than relying on red/green coloring alone to say which
-    side is which. The raw ``---``/``+++``/``@@ -3,4 +3,4 @@`` unified-diff
-    header lines (meaningful line positions to a `git diff` reader, noise to
-    everyone else) are dropped entirely.
-    """
+    """Groups a unified diff into template-ready blocks: unchanged runs as
+    ``{"kind": "context", "text": ...}``, changed runs as ``{"kind":
+    "change", "previous": [...], "suggested": [...]}``. Diff header lines are
+    dropped."""
     lines = difflib.unified_diff(_normalize_for_diff(old_text), _normalize_for_diff(new_text), lineterm="")
     blocks: list[dict] = []
     previous: list[str] = []
@@ -80,14 +60,8 @@ def diff_blocks(old_text: str, new_text: str) -> list[dict]:
 def record_prompt_version(
     store: SqliteStore, agent_spec_name: str, system_prompt: str
 ) -> None:
-    """Content-addressed history: records ``system_prompt`` as a version only
-    if an identical one isn't already on file for this agent. Without this,
-    restoring an old version (or re-applying one just undone) would log a
-    fresh duplicate row every time — the history would grow on every click
-    instead of being a genuine list of distinct versions. Restoring content
-    that's already recorded just moves which row counts as "current"; it
-    never mints a new one.
-    """
+    """No-ops if an identical version is already on file, so restoring an
+    old version never logs a duplicate row."""
     already_recorded = any(
         v.system_prompt == system_prompt for v in store.get_system_prompt_versions(agent_spec_name)
     )
@@ -100,15 +74,9 @@ def record_prompt_version(
 def prompt_version_history(
     current_system_prompt: str, prompt_versions: list[SystemPromptVersion]
 ) -> list[dict]:
-    """One row per distinct version ever recorded for this agent
-    (most-recent-created first), each diffed against whichever version came
-    immediately before it in time — the oldest entry is the prompt as it
-    stood before any fix was ever applied, shown as-is with no diff. Because
-    the version list is content-addressed (see ``record_prompt_version``),
-    every row — including ones already superseded and then brought back —
-    is restorable via the same action, and "current" is whichever row's text
-    matches what's live right now, not necessarily the newest row.
-    """
+    """One row per version (newest first), each diffed against its
+    predecessor; the oldest row has no diff. "current" is whichever row's
+    text matches what's live now, not necessarily the newest row."""
     rows = []
     total = len(prompt_versions)
     for i, version in enumerate(prompt_versions):

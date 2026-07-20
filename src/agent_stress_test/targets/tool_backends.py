@@ -1,14 +1,6 @@
-"""A small, deterministic, in-memory fake order-management backend for
-``AdvancedSampleAgent`` — real tool execution (not LLM-narrated invention) for
-the three tools ``config/agents/sample_support_advanced.yaml`` declares, so
-grounding/hallucination rules have real data to be tested against instead of
-only checking "did the model claim to call a tool."
-
-Deliberately plain: a handful of seeded orders exercising the traps a real
-support agent has to get right — a final-sale item, an order past the 30-day
-return window, an order already returned, and a two-item order requiring
-correct item disambiguation before starting a return.
-"""
+"""A deterministic, in-memory fake order-management backend for AdvancedSampleAgent's
+real tool execution: seeded orders cover final-sale, past-window, already-returned,
+and multi-item disambiguation cases."""
 
 import copy
 import json
@@ -21,9 +13,7 @@ RETURN_WINDOW_DAYS = 30
 
 _ORDER_ID_PATTERN = re.compile(r"NW-\d{3,6}", re.IGNORECASE)
 
-# A fixed, deterministic "days since delivery" per order rather than real
-# dates — the return-window trap must stay reproducible regardless of when
-# this runs (CLAUDE.md's deterministic-first rule), not drift with wall-clock time.
+# Fixed "days since delivery" per order (not real dates) keeps the return-window trap reproducible.
 _ORDER_SEED: dict[str, dict[str, Any]] = {
     "NW-1001": {
         "status": "delivered",
@@ -72,15 +62,9 @@ _ORDER_SEED: dict[str, dict[str, Any]] = {
 
 
 def parse_action_input(raw: str) -> dict[str, Any]:
-    """Loosely parse a narrated ``Action Input:`` line into keyword args.
+    """Loosely parses a narrated ``Action Input:`` line (JSON, key:value pairs, or a bare value).
 
-    ``ToolSpec`` never carries a formal parameter schema (see
-    ``provider_agent.py``'s identical assumption), so the model writes this
-    freehand — JSON, ``key: value`` pairs, or a bare value. Tolerant on
-    purpose: a model that writes ``"order NW-1003"`` instead of
-    ``{"order_id": "NW-1003"}`` should still resolve to the right order
-    rather than bouncing the agent off a formatting error unrelated to the
-    behavior actually under test.
+    Tolerant on purpose, so a malformed but readable input doesn't fail the agent on formatting alone.
     """
     raw = raw.strip()
     if not raw:
@@ -181,11 +165,8 @@ def _initiate_return(
 
 
 def build_northwind_tool_backend() -> dict[str, Callable[[dict[str, Any]], str]]:
-    """A fresh, independent copy of the fake order backend — one per
-    ``AdvancedSampleAgent`` instance (built once per run, see
-    ``composition.py``), so mutating state (an initiated return) never leaks
-    between separate runs but can still be observed across the branches of
-    the SAME run's conversation tree, exactly like a real order API would."""
+    """A fresh, independent copy of the fake order backend, so mutations (an
+    initiated return) never leak between runs but persist across one run's tree."""
     orders = copy.deepcopy(_ORDER_SEED)
     lock = threading.Lock()
     return {

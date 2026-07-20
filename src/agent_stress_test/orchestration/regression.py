@@ -1,12 +1,10 @@
 """Locks confirmed failures into a permanent replay corpus, and replays it.
 
-Closes the loop the reliability score and failure clusters start: a cluster
-found once can be promoted (``promote_clusters_to_cases``) into a
-``RegressionCase`` — a fixed transcript plus the exact rule it violated — and
-``RegressionRunner`` replays that transcript against a (possibly since-fixed)
-target agent to check whether the rule still fires. Promotion is a pure,
-in-memory step; persisting the result is the caller's job (the ``Store``
-port), same division as ``composition.cluster_and_persist``.
+A cluster can be promoted (``promote_clusters_to_cases``) into a
+``RegressionCase`` — a fixed transcript plus the rule it violated — and
+``RegressionRunner`` replays that transcript against a (possibly
+since-fixed) target to check whether the rule still fires. Promotion is a
+pure, in-memory step; persisting the result is the caller's job.
 """
 
 from dataclasses import dataclass
@@ -24,14 +22,11 @@ def promote_clusters_to_cases(
     *,
     cluster_ids: set[str] | None = None,
 ) -> list[RegressionCase]:
-    """Build one RegressionCase per (cluster, failing rule) at its representative node.
-
-    A representative node can carry more than one simultaneous failing
-    verdict (e.g. a competitor mention *and* a missing return-window
-    disclaimer in the same reply), so this yields one case per failing rule
-    there, not one per cluster. ``cluster_ids=None`` promotes every cluster;
-    otherwise only the named ones (an explicit, human-reviewed selection).
-    """
+    """Build one RegressionCase per (cluster, failing rule) at its
+    representative node — a node can carry more than one simultaneous
+    failing verdict, so a cluster can yield more than one case.
+    ``cluster_ids=None`` promotes every cluster; otherwise only the named
+    ones."""
     selected = [c for c in clusters if cluster_ids is None or c.id in cluster_ids]
     cases: list[RegressionCase] = []
     for cluster in selected:

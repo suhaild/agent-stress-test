@@ -9,15 +9,7 @@ from agent_stress_test.ports import TargetAgent
 class PythonFunctionAgent(TargetAgent):
     """Wraps any `Callable[[list[Message]], str | AgentResponse]` as a TargetAgent.
 
-    A callable that only knows how to return a final reply can keep returning a
-    plain `str` — it's wrapped as `AgentResponse(final_reply=..., trace=None)`.
-    A callable that already tracks its own reasoning steps can return a full
-    `AgentResponse` and its trace is passed through unchanged.
-
-    ``capabilities`` lets a caller who knows what the wrapped callable
-    actually does declare it accurately (e.g. one that emits real
-    ``ToolCall``s can pass ``Capabilities(tools=True)``) — this adapter can't
-    infer it from an arbitrary function, so it defaults to claiming nothing.
+    A plain `str` return is wrapped as `AgentResponse(final_reply=..., trace=None)`.
     """
 
     def __init__(

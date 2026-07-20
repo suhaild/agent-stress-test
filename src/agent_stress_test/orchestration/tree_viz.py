@@ -1,14 +1,8 @@
-"""A simple color-coded vertical conversation-tree visualization (Phase RE3).
+"""A simple color-coded vertical conversation-tree visualization.
 
-Deliberately timeboxed (see the build plan: "a simple color-coded vertical
-tree beats a fancy layout that eats the day"): one lane per leaf node, each
-lane a straight root-to-leaf line of colored nodes. This is correct for any
-tree shape without any real graph-layout math — a genuine branch just means
-two leaves share a colored prefix, drawn once per lane. The bundled default
-search strategy (``DeepEvalConversationSearch``) produces one root per
-persona with little to no branching in practice, so duplication is rare;
-``GreedyBestFirstSearch`` can branch more, in which case a shared prefix
-simply repeats across the branch's lanes.
+One lane per leaf node, each a straight root-to-leaf line — correct for any
+tree shape without graph-layout math, at the cost of repeating a shared
+prefix across lanes wherever the tree actually branches.
 """
 
 from dataclasses import dataclass
@@ -46,8 +40,7 @@ def _node_status(node_verdicts: list[Verdict]) -> NodeStatus:
 
 
 def build_tree_viz(tree: ConversationTree, verdicts: list[Verdict]) -> list[TreeVizLane]:
-    """One lane per leaf (a node no other node names as its parent) — same
-    "leaf" definition ``average_conversation_depth`` uses."""
+    """One lane per leaf (a node no other node names as its parent)."""
     by_node: dict[str, list[Verdict]] = {}
     for verdict in verdicts:
         by_node.setdefault(verdict.node_id, []).append(verdict)

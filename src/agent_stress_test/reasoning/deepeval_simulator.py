@@ -1,20 +1,10 @@
 """DeepEval-backed adversarial simulator.
 
-Replaces ``reasoning/simulator.py``'s domain-pinned ``Tactic`` prompts with
-DeepEval's own ``ConversationSimulator``. Each of that module's five tactics
-is re-expressed here as a ``ConversationalGolden`` persona (a scenario +
-user-description) — DeepEval's own simulator invents the actual adversarial
-user messages from that persona, rather than us hand-writing a per-tactic
-prompt. ``reasoning/simulator.py``'s ``Tactic``/``TacticRegistry``/
-``Simulator`` classes are untouched and still back the legacy
-``GreedyBestFirstSearch`` strategy (see ``orchestration/search.py``); this
-module backs the new ``orchestration/deepeval_search.py`` strategy instead.
-
-No ``expected_outcome`` is set on any persona, so DeepEval's default stopping
-controller (``check_expected_outcome``) always returns "not complete" and the
-simulated conversation reliably runs for exactly ``max_user_simulations``
-rounds — confirmed against the installed deepeval version, not assumed from
-docs (see ``reasoning/deepeval_bridge.py``'s own note on the same).
+Re-expresses reasoning/simulator.py's five tactics as DeepEval
+``ConversationalGolden`` personas; DeepEval's own simulator generates the
+actual adversarial messages from each persona. Backs
+``orchestration/deepeval_search.py`` (reasoning/simulator.py's tactics still
+back the legacy greedy search).
 """
 
 from typing import Callable
@@ -107,19 +97,8 @@ def from_deepeval_tool_call(call: DeepEvalToolCall) -> ToolCall:
 
 
 def make_model_callback(target: TargetAgent) -> Callable[[list[Turn]], Turn]:
-    """Wrap a ``TargetAgent`` as the ``Callable[..., Turn]`` DeepEval's
-    ``ConversationSimulator`` expects.
-
-    DeepEval's own type hint for ``model_callback`` claims ``Callable[[str],
-    str]``, but the installed version's runtime contract disagrees on both
-    counts (confirmed empirically, not trusted from docs — see
-    ``reasoning/deepeval_bridge.py``'s note on the same): the callback must
-    return a ``Turn``, not a bare string, and ``turns`` (which DeepEval
-    always passes with the just-generated user turn already appended as its
-    last element) is enough conversation history on its own — the separate
-    ``input`` kwarg is redundant with ``turns[-1].content`` and isn't needed
-    here.
-    """
+    """Adapts a TargetAgent to DeepEval's model_callback contract, which
+    actually requires returning a Turn (not the str its type hint claims)."""
 
     def callback(turns: list[Turn]) -> Turn:
         messages = [Message(role=turn.role, content=turn.content) for turn in turns]
@@ -138,32 +117,22 @@ def simulate_personas(
     max_user_simulations: int,
     personas: dict[str, ConversationalGolden] | None = None,
 ) -> list[ConversationalTestCase]:
-    """Run one full DeepEval-simulated conversation per named persona against
-    ``target``, fully synchronously (``async_mode=False``; DeepEval processes
-    multiple goldens in one ``.simulate()`` call sequentially under
-    ``async_mode=False`` — confirmed in the installed version's source, not
-    assumed).
+    """Runs one DeepEval-simulated conversation per persona against ``target``.
 
-    ``personas`` overrides the registry ``persona_names`` is looked up
-    against — left ``None`` (the default, and every caller before B4's
-    profiler-consumption wiring), that's the bundled ``PERSONAS`` dict.
-    ``orchestration/deepeval_search.py`` passes a merged bundled+profile
-    dict here so a run can also target an agent's own generated personas,
-    not just the fixed 5-tactic library.
-
-    SHIM DISCIPLINE: ``sim_provider`` is always wrapped through
-    ``LLMProviderAsDeepEvalLLM`` before being handed to
-    ``ConversationSimulator`` — DeepEval's own default model (whatever it
-    falls back to when ``simulator_model`` is left unset) must never be
-    reached, real or fake.
+    ``personas`` overrides the registry ``persona_names`` are resolved
+    against, letting a profiler-generated persona set be used instead of the
+    bundled library.
     """
+    # sim_provider is always wrapped — DeepEval's own default model must never be reached.
     shim = LLMProviderAsDeepEvalLLM(sim_provider)
     simulator = ConversationSimulator(
         model_callback=make_model_callback(target),
         simulator_model=shim,
-        async_mode=False,
+        async_mode=False,  # DeepEval runs multiple goldens sequentially under this mode.
         max_concurrent=1,
     )
     registry = personas if personas is not None else PERSONAS
     goldens = [registry[name] for name in persona_names]
+    # No persona sets expected_outcome, so each simulation always runs the full
+    # max_user_simulations rounds (DeepEval's stopping controller never reports "complete").
     return simulator.simulate(goldens, max_user_simulations=max_user_simulations)

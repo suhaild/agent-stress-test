@@ -36,12 +36,7 @@
     </div>
   </div>
   <script>
-    // The export links above read straight from the store (see server.py's
-    // _require_terminal_run), which 409s until the run is completed/failed
-    // -- this just keeps the UI from inviting a click that's guaranteed to
-    // error, by mirroring the status badge's own data-status attribute
-    // (re-checked after every SSE swap, since "status" pushes fresh markup
-    // in via innerHTML, not a page reload).
+    // Export routes 409 until the run is terminal -- mirror the status badge so the links aren't clickable early.
     (function () {
       function updateExportLinks() {
         var badge = document.querySelector('[data-status]');

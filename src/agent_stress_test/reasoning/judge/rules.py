@@ -1,7 +1,6 @@
 """Tier 1: deterministic rule checks (Strategy pattern) derived from an
-AgentSpec, each producing a Verdict with a stable rule_id, a human-readable
-reason, and tier="rules". Plus deflection detection, a related but separate
-deterministic signal (see ``is_deflection``'s docstring).
+AgentSpec, each producing a Verdict with tier="rules". Plus deflection
+detection, a related but separate deterministic signal.
 """
 
 import re
@@ -19,19 +18,9 @@ from agent_stress_test.reasoning.judge.base import Judge
 DETERMINISTIC_CONFIDENCE = 1.0
 
 
-# Shared by every check whose pattern needs sentence-scoped matching (see
-# RequiredDisclaimerCheck's docstring): a plain whole-reply regex search lets
-# a proximity gap span across unrelated clauses in dash/bullet-heavy
-# real-model output, matching e.g. a word in one sentence against an
-# unrelated word several sentences later just because no literal "." sits
-# between them.
-#
-# pysbd.Segmenter.segment() sets `self.original_text` on the instance for the
-# duration of each call, so one instance is NOT safe to call concurrently —
-# the search's tactic branches run each node's checks from multiple threads
-# at once, and two overlapping segment() calls can race on that attribute.
-# A thread-local instance (one Segmenter per thread, built lazily and reused)
-# avoids the race without serializing the checks behind a lock.
+# Sentence-scoped matching avoids false proximity matches across unrelated
+# clauses. pysbd.Segmenter.segment() mutates instance state, so it's not
+# thread-safe; a thread-local instance avoids the race without locking.
 _segmenter_local = threading.local()
 
 
@@ -52,13 +41,8 @@ class CheckResult:
 
 
 class RuleCheck(ABC):
-    """A single deterministic rule check (Strategy).
-
-    Each check owns a stable ``rule_id`` and a ``severity`` (both supplied from
-    the AgentSpec's rule config, never hardcoded here) and inspects an
-    AgentResponse (final reply plus optional reasoning trace), returning a
-    CheckResult.
-    """
+    """A single deterministic rule check (Strategy). ``rule_id``/``severity``
+    always come from the AgentSpec's rule config, never hardcoded here."""
 
     def __init__(self, rule_id: str, severity: Severity) -> None:
         self.rule_id = rule_id
@@ -96,12 +80,9 @@ class BannedToolUseCheck(RuleCheck):
 class ForbiddenOutputCheck(RuleCheck):
     """Fails if any single sentence in the final reply matches a forbidden pattern.
 
-    Matched sentence-by-sentence, not against the whole reply — some
-    forbidden patterns (e.g. ``no-self-refund``'s) contain their own internal
-    proximity gap (``word1[^.]*word2``), and a whole-reply search lets that
-    gap span clauses that have nothing to do with each other whenever the
-    real text uses a dash, colon, or line break instead of a period between
-    them (see ``_sentence_segmenter``).
+    Matched sentence-by-sentence rather than whole-reply, since some patterns
+    have their own internal proximity gap that a whole-reply search would let
+    span two unrelated clauses.
     """
 
     def __init__(
@@ -133,13 +114,9 @@ class ForbiddenOutputCheck(RuleCheck):
 class RequiredDisclaimerCheck(RuleCheck):
     """Fails if a triggering topic appears but a required disclaimer does not.
 
-    ``trigger_pattern`` is matched sentence-by-sentence, not against the whole
-    reply, using the same ``_sentence_segmenter`` as ``ForbiddenOutputCheck``
-    — for the same reason: a plain whole-reply search lets a trigger word in
-    one sentence match an unrelated pronoun (or other short-range context)
-    from a completely different sentence. ``required_pattern`` still searches
-    the whole reply: the disclaimer doesn't need to sit in the same sentence
-    as the trigger, only somewhere in the response.
+    ``trigger_pattern`` is matched sentence-by-sentence (same reason as
+    ``ForbiddenOutputCheck``); ``required_pattern`` searches the whole reply,
+    since the disclaimer need not sit in the same sentence as the trigger.
     """
 
     def __init__(
@@ -217,12 +194,10 @@ class FormatViolationCheck(RuleCheck):
 
 
 class UngroundedClaimCheck(RuleCheck):
-    """Fails if the reply asserts data patterns without the grounding tool call.
+    """Fails if the reply asserts a data pattern without the grounding tool call.
 
-    Deterministic, trace-based partial check: if the reply contains any of the
-    ``data_patterns`` but ``required_tool`` never appears in the trace, the data
-    was not looked up and is treated as invented. Verifying that looked-up
-    values are *correct* is deferred to the tier-2 LLM judge (Phase 8).
+    Only checks that the data was looked up, not that the looked-up value is
+    correct — that's left to the tier-2 LLM judge.
     """
 
     def __init__(
@@ -255,15 +230,8 @@ class UngroundedClaimCheck(RuleCheck):
         return CheckResult(passed=True, reason="Reply asserts no ungrounded order data.")
 
 
-# --- Phase C5: refusal/deflection detection --------------------------------
-
-# Deliberately NOT a RuleCheck: a deflection isn't a per-AgentSpec behavioral
-# rule with its own id/severity, it's a generic "did the agent dodge the
-# question" signal every target should be checked for. Deterministic and free
-# (a regex scan, no LLM call) — per CLAUDE.md's deterministic-first rule, this
-# is plain pattern matching, not a judgment call worth an LLM. Consumed by
-# orchestration/search.py to steer the frontier and to surface deflections as
-# their own signal, distinct from a genuine rule PASS.
+# Deliberately not a RuleCheck: a generic "did the agent dodge the question"
+# signal every target is checked for, not a per-AgentSpec rule with its own id.
 _DEFLECTION_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in [
@@ -280,14 +248,8 @@ _DEFLECTION_PATTERNS = [
 
 
 def is_deflection(reply: str) -> bool:
-    """Does this reply dodge the question instead of answering it — a
-    refusal, a boilerplate non-answer, or a redirect to another channel?
-
-    An agent that consistently deflects under adversarial pressure isn't
-    "reliable", it's just evasive — a signal worth surfacing on its own,
-    distinct from a genuine rule PASS (which only says no *specific* rule was
-    broken, not that the agent actually engaged).
-    """
+    """Does this reply dodge the question — a refusal, boilerplate non-answer,
+    or redirect — instead of actually engaging with it?"""
     return any(pattern.search(reply) for pattern in _DEFLECTION_PATTERNS)
 
 
@@ -323,12 +285,8 @@ class RulesJudge(Judge):
         return verdicts
 
 
-# Each entry adapts one RuleCheck's constructor to a rule's `params` dict, so
-# adding a check to an AgentSpec is a YAML edit, not a Python change. `rule.id`,
-# `rule.severity`, and `rule.text` always come from the Rule itself; `params`
-# supplies only what's specific to that check's detection logic (patterns,
-# tool names). A rule with no matching `check_type` here simply gets no tier-1
-# check — see `Rule.check_type`'s docstring in models.py.
+# Adapts each RuleCheck's constructor to a rule's `params` dict, so adding a
+# check to an AgentSpec is a YAML edit, not a Python change.
 _CHECK_BUILDERS: dict[str, Callable[[Rule], RuleCheck]] = {
     "banned_tool_use": lambda rule: BannedToolUseCheck(
         rule_id=rule.id,
@@ -366,12 +324,7 @@ _CHECK_BUILDERS: dict[str, Callable[[Rule], RuleCheck]] = {
 
 def build_checks(agent_spec: AgentSpec) -> list[RuleCheck]:
     """Build the deterministic tier-1 checks declared by an AgentSpec's rules.
-
-    Generic over any spec: a rule opts into a tier-1 check by setting
-    `check_type` (a key in `_CHECK_BUILDERS`) and the matching `params`. Rules
-    with no `check_type` get no tier-1 check and are judged by the tier-2 LLM
-    judge alone.
-    """
+    A rule with no matching `check_type` gets no tier-1 check."""
     return [
         _CHECK_BUILDERS[rule.check_type](rule) for rule in agent_spec.rules if rule.check_type
     ]

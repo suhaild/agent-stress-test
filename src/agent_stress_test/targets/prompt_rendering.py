@@ -1,8 +1,4 @@
-"""Renders an AgentSpec's system prompt for a target that narrates its own
-reasoning as text — shared by ``SampleAgent`` (ReAct narration) and
-``ProviderAgent`` (native tool-calling, which still needs the same
-tools/rules framing in its system message).
-"""
+"""Renders an AgentSpec's system prompt; shared by SampleAgent and ProviderAgent."""
 
 from agent_stress_test.models import AgentSpec
 

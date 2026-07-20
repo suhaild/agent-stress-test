@@ -1,61 +1,21 @@
 """Compounding reliability score.
 
-A stress-tested agent has to survive a whole conversation, not just one turn.
-So the headline reliability number is *compounding*: multiply the per-step
-success probabilities (``1 - failure_rate``) across a conversation. An
-85%-per-step agent over 8 turns is only ``0.85 ** 8 ≈ 0.27`` reliable end to
-end — small per-step slips compound into a big end-to-end risk.
+An agent has to survive a whole conversation, not just one turn, so the
+headline score multiplies per-step success probabilities (``1 -
+failure_rate``) across it: an 85%-per-step agent over 8 turns is only
+``0.85 ** 8 ~= 0.27`` reliable end to end.
 
-The search tree holds many branches (one per tactic per expansion), not one
-conversation — its total node count grows with search breadth (``--budget``
-x tactics), not with how long a real conversation runs. Compounding over that
-raw count would make the score collapse toward 0 for any nonzero failure rate
-once the tree gets wide, regardless of true reliability, and would make scores
-incomparable across different budgets. So the per-step failure rate is still
-estimated from every judged node (more branches = a better estimate), but it
-is compounded over the *average conversation depth* (mean root-to-leaf path
-length) instead — the turn count a user would actually experience.
+The search tree's node count grows with search breadth, not with real
+conversation length, so compounding over the raw node count would collapse
+scores toward 0 as the tree widens and make scores incomparable across
+budgets. The failure rate is still estimated from every judged node, but
+compounded over the *average conversation depth* (mean root-to-leaf length)
+instead — the turn count a user would actually experience.
 
-Pure math over the persisted structures (nodes + verdicts), so the same score
-falls out of an in-memory tree or of rows reloaded from the store: depth is
-recomputed from each node's ``parent_id``, with no dependency on ConversationTree.
-
-Phase C4 — how the per-step failure rate itself is computed is now a
-selectable ``ScoringModel`` (Strategy): ``SeverityWeightedModel`` (a step's
-failure weighs by its worst verdict's severity, so a run of only minor nits
-scores higher than one with the same failure count but all critical — the
-DEFAULT, since it's the more meaningful headline number and is always
-computable from any run's ordinary rule/tool verdicts), ``UnweightedFailureModel``
-(the ORIGINAL model — any failing verdict counts a step as failed, full
-stop, regardless of severity — kept available, not deleted, for anyone who
-wants the flat count instead), and ``TaskSuccessModel`` (scoped to Phase-C's
-``TaskCompletionMetric`` verdicts instead of rule/tool violations — only
-meaningful when a run actually enabled ``task_completion``). The
-``(1 - p) ** d`` compounding shape itself is shared by every model; only
-``p`` (and, for ``TaskSuccessModel``, which nodes count as a "step" at all)
-is model-specific.
-
-Choosing ``SeverityWeightedModel`` as the default means a run's headline
-score is NOT numerically comparable to one computed before this change —
-that tradeoff was made deliberately (see ``tests/test_reliability.py``,
-which was updated accordingly): pass ``model=UnweightedFailureModel()``
-explicitly wherever the original flat-count number is needed instead.
-
-Phase C6 adds ``near_miss_ranking`` — not a scoring model, just a read of the
-same nodes/verdicts through C5's ``graded_proximity`` lens, surfaced by both
-report surfaces (``report/terminal.py``, the dashboard) alongside the
-confirmed failures.
-
-Beyond the phase plan: ``apply_mandatory_minimum_cap`` caps the compounded
-score whenever a run contains at least one critical failure, regardless of
-how thinly that failure dilutes across an otherwise-large or deep tree — a
-lone critical violation is disqualifying on its own, not just one bad step
-among many, so ``SeverityWeightedModel``'s averaging shouldn't be allowed to
-hide it behind a high score. Applied as its own post-processing pass inside
-``score_run`` (never inside a ``ScoringModel.evaluate``), deliberately kept
-separate from the per-model aggregation math above so the two concerns —
-how the raw rate is computed, vs. whether a critical failure caps the
-ceiling — stay independently readable and testable.
+How the per-step failure rate itself is computed is a selectable
+``ScoringModel`` (Strategy): ``SeverityWeightedModel`` (default),
+``UnweightedFailureModel``, and ``TaskSuccessModel``. The ``(1 - p) ** d``
+compounding shape is shared by every model; only ``p`` is model-specific.
 """
 
 from abc import ABC, abstractmethod
@@ -77,10 +37,7 @@ def _clamp01(value: float) -> float:
 
 def compounding_reliability(step_failure_rates: Iterable[float]) -> float:
     """Product of per-step success probabilities ``Π (1 - p_i)``, in [0, 1].
-
-    Each rate is clamped to [0, 1] first. No steps means nothing could fail, so
-    the score is 1.0.
-    """
+    Each rate is clamped to [0, 1] first; no steps means a score of 1.0."""
     score = 1.0
     for rate in step_failure_rates:
         score *= 1.0 - _clamp01(rate)
@@ -88,12 +45,8 @@ def compounding_reliability(step_failure_rates: Iterable[float]) -> float:
 
 
 def average_conversation_depth(nodes: list[Node]) -> float:
-    """Mean root-to-leaf path length (in turns), 0.0 for an empty tree.
-
-    A leaf is any node no other node names as its parent. Depth is computed by
-    walking each leaf's ``parent_id`` chain, so it needs only the node list —
-    the same structure that is persisted and reloaded.
-    """
+    """Mean root-to-leaf path length (in turns), 0.0 for an empty tree. A
+    leaf is any node no other node names as its parent."""
     if not nodes:
         return 0.0
     by_id = {node.id: node for node in nodes}
@@ -119,8 +72,7 @@ def _verdicts_by_node(verdicts: list[Verdict]) -> dict[str, list[Verdict]]:
 
 
 def _worst_severity(node_verdicts: list[Verdict]) -> Severity | None:
-    """The severity of the worst-failing verdict among ``node_verdicts``, or
-    ``None`` if every one of them passed."""
+    """``None`` if every verdict passed."""
     failing = [v for v in node_verdicts if not v.passed]
     if not failing:
         return None
@@ -133,8 +85,8 @@ def _empty_breakdown() -> dict[Severity, int]:
 
 @dataclass(frozen=True)
 class ModelResult:
-    """What a ``ScoringModel`` computes before the shared compounding step
-    (``score_run`` takes that step itself, identically for every model)."""
+    """What a ``ScoringModel`` computes before ``score_run``'s shared
+    compounding step."""
 
     total_steps: int
     failing_steps: int
@@ -145,9 +97,7 @@ class ModelResult:
 
 class ScoringModel(ABC):
     """Strategy: which nodes count as a "step" and how the per-step failure
-    rate is derived from them. Every model still compounds via
-    ``(1 - p) ** d`` (see ``score_run``) — only this part is model-specific.
-    """
+    rate is derived from them."""
 
     name: ClassVar[str]
 
@@ -156,13 +106,9 @@ class ScoringModel(ABC):
 
 
 class UnweightedFailureModel(ScoringModel):
-    """The original model: a step fails if ANY verdict on it failed, full
-    stop — a critical rule violation and a barely-there minor nit count
-    exactly the same toward the rate. No longer the default (see
-    ``SeverityWeightedModel``) — kept available, not deleted, for anyone who
-    wants the original flat-count number back (pass
-    ``model=UnweightedFailureModel()`` to ``score_run`` explicitly).
-    """
+    """A step fails if any verdict on it failed, full stop — a critical
+    violation and a minor nit count the same toward the rate. Not the
+    default; pass ``model=UnweightedFailureModel()`` explicitly to use it."""
 
     name = "unweighted"
 
@@ -181,14 +127,11 @@ class UnweightedFailureModel(ScoringModel):
 
 
 class SeverityWeightedModel(ScoringModel):
-    """The DEFAULT model (see ``score_run``). Same failing/passing steps as
-    ``UnweightedFailureModel`` — the per-step failure RATE is the mean
-    ``SEVERITY_WEIGHT`` of each step's worst failure (0.0 for a passing step)
-    instead of a flat 1.0/0.0, so a run whose only failures are minor nits
-    scores meaningfully higher than one with the same failure COUNT but all
-    critical (see ``orchestration/search.py``'s ``failure_proximity``, reused
-    here rather than reimplemented).
-    """
+    """The default model. Same failing/passing steps as
+    ``UnweightedFailureModel``, but the per-step failure rate is the mean
+    ``SEVERITY_WEIGHT`` of each step's worst failure rather than a flat
+    1.0/0.0, so a run of only minor nits scores higher than one with the
+    same failure count but all critical."""
 
     name = "severity_weighted"
 
@@ -210,16 +153,10 @@ class SeverityWeightedModel(ScoringModel):
 
 
 class TaskSuccessModel(ScoringModel):
-    """Fed by Phase-C's ``TaskCompletionMetric`` (``scope="task"`` verdicts)
-    instead of rule/tool violations.
-
-    A step is scoped to nodes that actually HAVE a task-completion verdict —
-    ``task_completion`` is opt-in (see ``build_runner``), so most runs have
-    none at all. ``applicable=False`` when no node in the run has one, so a
-    caller/renderer can show "not measured" instead of a misleading 100%
-    (mirrors ``TokenUsage.pricing_unavailable``'s "the number technically
-    computed but don't trust it" idiom).
-    """
+    """Fed by ``TaskCompletionMetric`` (``scope="task"`` verdicts) instead
+    of rule/tool violations. Scoped to nodes that actually have a
+    task-completion verdict; ``applicable=False`` when none do, so a
+    caller/renderer can show "not measured" instead of a misleading 100%."""
 
     name = "task_success"
 
@@ -257,10 +194,7 @@ class ReliabilityReport:
     applicable: bool = True
 
 
-# A run with even one critical failure is capped at this ceiling, however
-# high the severity-weighted average would otherwise land — see
-# apply_mandatory_minimum_cap. Comfortably inside report/dashboard's own
-# "fail" color threshold (< 0.4, see reliability_gauge.html), so a capped
+# Kept below report/dashboard's "fail" color threshold (< 0.4) so a capped
 # score always renders as unambiguously bad, not a borderline "warn".
 CRITICAL_FAILURE_SCORE_CAP = 0.3
 
@@ -271,13 +205,8 @@ def apply_mandatory_minimum_cap(
     *,
     cap: float = CRITICAL_FAILURE_SCORE_CAP,
 ) -> float:
-    """Cap ``score`` at ``cap`` when ``severity_breakdown`` shows at least one
-    critical failure — a pure post-processing pass (see the module
-    docstring). Never raises a score, only ever lowers it: a run whose raw
-    score already sits at or below ``cap`` (e.g. one where nearly every step
-    failed) is returned unchanged, since ``min(score, cap)`` is a no-op once
-    ``score <= cap``.
-    """
+    """Cap ``score`` at ``cap`` when ``severity_breakdown`` shows at least
+    one critical failure. Never raises a score, only ever lowers it."""
     if severity_breakdown.get("critical", 0) > 0:
         return min(score, cap)
     return score
@@ -287,18 +216,9 @@ def score_run(
     nodes: list[Node], verdicts: list[Verdict], *, model: ScoringModel | None = None
 ) -> ReliabilityReport:
     """Compounding reliability of a run from its nodes and verdicts.
-
-    ``model`` selects how the per-step failure rate is computed (see the
-    module docstring); left ``None``, ``SeverityWeightedModel`` is used — a
-    run's headline score now weighs failures by severity rather than
-    counting them flat. Pass ``model=UnweightedFailureModel()`` for the
-    original flat-count number instead.
-
-    Whatever the model, the resulting score is then passed through
-    ``apply_mandatory_minimum_cap`` — a run with any critical failure never
-    reports higher than ``CRITICAL_FAILURE_SCORE_CAP``, regardless of how
-    the chosen model weighed it.
-    """
+    ``model`` selects how the per-step failure rate is computed; defaults
+    to ``SeverityWeightedModel``. The result is then passed through
+    ``apply_mandatory_minimum_cap``."""
     resolved_model = model if model is not None else SeverityWeightedModel()
     result = resolved_model.evaluate(nodes, verdicts)
     conversation_depth = average_conversation_depth(nodes)
@@ -319,7 +239,7 @@ def score_run(
 
 @dataclass(frozen=True)
 class NearMiss:
-    """One passing node that came close to failing — see ``near_miss_ranking``."""
+    """One passing node that came close to failing."""
 
     node_id: str
     proximity: float
@@ -329,20 +249,11 @@ class NearMiss:
 def near_miss_ranking(
     nodes: list[Node], verdicts: list[Verdict], *, limit: int = 5
 ) -> list[NearMiss]:
-    """The passing nodes with the highest ``graded_proximity`` (Phase C5),
-    ranked descending and capped to ``limit`` — "how close did we come",
-    reported alongside the confirmed failures rather than buried in the tree.
-
-    Computed directly from ``nodes``/``verdicts`` (the same persisted shape
-    every report surface already has), not from
-    ``SearchResult.exploration_detail`` — that field is only ever populated
-    by ``GreedyBestFirstSearch``'s result (``None`` for other strategies —
-    see its docstring), while this works for a run produced by *any*
-    ``SearchStrategy``, including the ``DeepEvalConversationSearch`` engine
-    ``build_runner`` actually wires by default. A node with 0.0 proximity (a
-    clean pass with nothing to report) is excluded — there's nothing "near"
-    about it.
-    """
+    """The passing nodes with the highest ``graded_proximity``, ranked
+    descending and capped to ``limit``. Computed directly from
+    ``nodes``/``verdicts`` rather than ``SearchResult.exploration_detail``
+    (which only ``GreedyBestFirstSearch`` populates), so this works for any
+    ``SearchStrategy``'s output."""
     by_node = _verdicts_by_node(verdicts)
     scored: list[NearMiss] = []
     for node in nodes:

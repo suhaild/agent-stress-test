@@ -1,27 +1,9 @@
 """Schema-version guard + one-time migration for ``runs.sqlite``.
 
 Every entity is stored as an opaque ``model_dump_json()`` blob (see
-``sqlite_store.py``), so a "schema migration" here means: can every existing
-blob still be parsed by *today's* Pydantic models? Phase A1's v2 contract
-(``Message.content`` widened to a union, ``Node``/``AgentResponse`` gaining
-``tool_calls``) was additive, so any pre-A1 ("v1") row already parses under
-the current ("v2") models untouched — but the mechanism here is built to
-matter for the next change that *isn't* additive, not just this one.
-
-Two entry points:
-  - ``ensure_current_or_raise`` — the startup guard (``cli.py``/``server.py``
-    call this once, before doing any real work). A DB whose rows all still
-    parse under the current models is stamped current and allowed through
-    (this covers both a brand-new DB and one written entirely by today's
-    code, e.g. in tests, that never happened to go through this stamping
-    before). A DB with a row that *doesn't* parse is refused with an
-    actionable message instead of a raw ``ValidationError`` — that's the
-    signal an operator actually needs ``migrate()``.
-  - ``migrate`` — the explicit, operator-run upgrade: back up the file, then
-    for every row, validate under the current models (where a future
-    genuinely-breaking change would plug in real field-by-field rewriting)
-    and write the re-dumped JSON back. Idempotent: a DB already at the
-    current version is a no-op.
+``sqlite_store.py``), so migrating means re-validating each blob under the
+current Pydantic models and re-dumping it — see ``ensure_current_or_raise``
+(the startup guard) and ``migrate`` (the operator-run upgrade).
 """
 
 import shutil
