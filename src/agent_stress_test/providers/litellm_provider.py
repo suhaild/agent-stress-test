@@ -26,6 +26,14 @@ from agent_stress_test.ports import (
 # so a large --sample-n doesn't fan out an unbounded burst of requests.
 _MAX_SAMPLE_WORKERS = 5
 
+# litellm's own default (no timeout passed at all) is 6000s -- indistinguishable
+# from a genuine hang for a run stuck on an unresponsive endpoint (e.g. a local
+# model server that isn't actually running). A real completion, even a slow
+# one, finishes well under a minute; callers with a legitimately slower setup
+# (a big local model on modest hardware) can still override via the
+# constructor's **default_kwargs.
+_DEFAULT_TIMEOUT_SECONDS = 60
+
 # litellm.exceptions subclasses openai's hierarchy, one-to-one per provider,
 # so this maps by exception *type* rather than by (provider, status code) --
 # stable across whichever of Claude/OpenAI/etc. actually raised it.
@@ -56,7 +64,11 @@ def _classify_error(model: str, exc: Exception) -> ProviderError:
             "or reduce concurrency (e.g. --sample-n)."
         )
     if isinstance(exc, _TIMEOUT_ERRORS):
-        return ProviderTimeoutError(f"Request to model '{model}' timed out.")
+        return ProviderTimeoutError(
+            f"Request to model '{model}' timed out after {_DEFAULT_TIMEOUT_SECONDS}s — check "
+            "the model/endpoint is reachable (e.g. a local model server actually running), or "
+            "pass a longer `timeout` explicitly if it's just genuinely slow."
+        )
     if isinstance(exc, _CONNECTION_ERRORS):
         return ProviderConnectionError(
             f"Could not reach the provider for model '{model}' — check network connectivity "
@@ -82,7 +94,7 @@ class LiteLLMProvider(LLMProvider):
     def __init__(self, model: str, **default_kwargs: object) -> None:
         super().__init__()
         self._model = model
-        self._default_kwargs = default_kwargs
+        self._default_kwargs = {"timeout": _DEFAULT_TIMEOUT_SECONDS, **default_kwargs}
 
     def _record_usage(self, response: object) -> None:
         """Side effect only — capture ``response.usage`` and

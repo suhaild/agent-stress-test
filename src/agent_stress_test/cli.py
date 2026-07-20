@@ -27,18 +27,20 @@ from agent_stress_test.composition import (
     build_provider,
     build_target,
     cluster_and_persist,
+    reconcile_interrupted_runs,
     resolve_sim_provider_name,
     resolve_tactics,
 )
 from agent_stress_test.config import load_agent_spec, load_settings
 from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.ports import ProviderError
+from agent_stress_test.report.export import build_report_bundle, to_json, to_markdown
 from agent_stress_test.report.terminal import render_full_report
 from agent_stress_test.store.migrations import ensure_current_or_raise
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 _DEFAULT_AGENT_SPEC = (
-    Path(__file__).resolve().parents[2] / "config" / "agents" / "sample_support.yaml"
+    Path(__file__).resolve().parents[2] / "config" / "agents" / "sample_support_advanced.yaml"
 )
 _DEFAULT_DB = "runs.sqlite"
 
@@ -56,6 +58,7 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
     # instead of being rejected before build_runner() (which merges profile
     # personas in automatically) ever sees it.
     with SqliteStore(args.db) as store:
+        reconcile_interrupted_runs(store)
         profile = store.get_stress_profile(spec.name)
     extra_valid = [persona.name for persona in profile.personas] if profile else []
     tactics = resolve_tactics(args.tactics, extra_valid=extra_valid)
@@ -80,12 +83,18 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
     est_calls = nodes + (nodes * sample_n if use_scorer else 0)
     consistency = f"sample-n={sample_n}" if use_scorer else "off"
     sim_note = f", simulator={sim_provider_name}" if sim_provider_name != args.provider else ""
-    console.print(
-        f"[dim]Running against [bold]{args.provider}[/bold] "
-        f"(budget={budget} turns/persona, {n_personas} personas, "
-        f"consistency={consistency}{sim_note}) - "
-        f"up to ~{est_calls} model calls. This can take a while.[/dim]"
-    )
+    # Phase RE4: --format json/markdown is for CI gating, which redirects
+    # stdout and expects it to parse cleanly — no progress chatter or a Rich
+    # spinner mixed in, unlike the default --format rich (a human at a
+    # terminal, watching a live run).
+    quiet = args.format != "rich"
+    if not quiet:
+        console.print(
+            f"[dim]Running against [bold]{args.provider}[/bold] "
+            f"(budget={budget} turns/persona, {n_personas} personas, "
+            f"consistency={consistency}{sim_note}) - "
+            f"up to ~{est_calls} model calls. This can take a while.[/dim]"
+        )
 
     with SqliteStore(args.db) as store:
         runner = build_runner(
@@ -97,20 +106,29 @@ def _cmd_run(args: argparse.Namespace, console: Console) -> int:
             tactics=tactics,
             sample_n=sample_n,
         )
-        with console.status("[bold]Stress-testing agent...[/bold]", spinner="dots"):
+        if quiet:
             result = runner.run(provider_name=args.provider, budget=budget)
+        else:
+            with console.status("[bold]Stress-testing agent...[/bold]", spinner="dots"):
+                result = runner.run(provider_name=args.provider, budget=budget)
 
         clusters = cluster_and_persist(result, store)
+        verdicts = result.tree.all_verdicts()
 
-        console.print(f"Run ID: {result.run.id}")
-        render_full_report(
-            console,
-            run=result.run,
-            reliability=result.reliability,
-            clusters=clusters,
-            tree=result.tree,
-            verdicts=result.tree.all_verdicts(),
-        )
+        if args.format == "json":
+            print(to_json(build_report_bundle(result.run, result.tree, verdicts, clusters)))
+        elif args.format == "markdown":
+            print(to_markdown(build_report_bundle(result.run, result.tree, verdicts, clusters)))
+        else:
+            console.print(f"Run ID: {result.run.id}")
+            render_full_report(
+                console,
+                run=result.run,
+                reliability=result.reliability,
+                clusters=clusters,
+                tree=result.tree,
+                verdicts=verdicts,
+            )
     return 0
 
 
@@ -162,6 +180,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--tactics",
         default=None,
         help="Comma-separated subset of tactics to use (default: all).",
+    )
+    run_parser.add_argument(
+        "--format",
+        choices=["rich", "json", "markdown"],
+        default="rich",
+        help=(
+            "Report format (default: rich, the colorful terminal report). "
+            "'json'/'markdown' print a parseable report to stdout with no other "
+            "output, for CI gating."
+        ),
     )
     run_parser.set_defaults(func=_cmd_run)
 

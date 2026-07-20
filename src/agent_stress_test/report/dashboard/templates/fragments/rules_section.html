@@ -1,0 +1,50 @@
+<section id="rules-section" class="space-y-2">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <h3 class="tag-label">Candidate Rules <span id="candidate-rules-count" class="text-[var(--ink-faint)] normal-case">({{ rules | length }} — proposed, never auto-applied)</span></h3>
+    <span class="flex items-center gap-2">
+      <button type="button" class="btn-ghost text-xs" onclick="_toggleAllProfileCards(this, true)">Expand All</button>
+      <button type="button" class="btn-ghost text-xs" onclick="_toggleAllProfileCards(this, false)">Collapse All</button>
+      <button type="button" class="btn-ghost text-xs" data-dirty
+              @click="$refs.ruleList.appendChild($refs.ruleTemplate.content.cloneNode(true))">
+        + Add Rule
+      </button>
+      {% if rules %}
+      <button type="button" class="btn-ghost text-xs" style="border-color: var(--pass); color: var(--pass);"
+              hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/candidate-rules/apply-all"
+              hx-include="#rules-section"
+              hx-target="#rules-section"
+              hx-swap="outerHTML"
+              hx-confirm="Write all {{ rules | length }} remaining candidate rule{{ 's' if rules | length != 1 else '' }} into {{ agent_spec_name }}'s actual rules at once? Any that collide with an id already on the spec are skipped and reported, not blocked.">
+        Apply All ({{ rules | length }})
+      </button>
+      {% endif %}
+    </span>
+  </div>
+  {% if bulk_result %}
+  <div class="panel p-3" style="border-left: 3px solid var(--accent);">
+    {% if bulk_result.applied %}
+    <p class="text-sm" style="color: var(--pass);">Applied {{ bulk_result.applied | length }} rule{{ "s" if bulk_result.applied | length != 1 else "" }}.</p>
+    {% endif %}
+    {% if bulk_result.skipped %}
+    <p class="text-sm mt-1" style="color: var(--warn);">Skipped {{ bulk_result.skipped | length }} (id collision):</p>
+    <ul class="font-mono text-[.7rem] text-[var(--ink-faint)] mt-0.5 space-y-0.5">
+      {% for rid, reason in bulk_result.skipped %}
+      <li>{{ rid }} — {{ reason }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if not bulk_result.applied and not bulk_result.skipped %}
+    <p class="text-sm" style="color: var(--ink-faint);">Nothing to apply.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+  <template x-ref="ruleTemplate">{% include "fragments/rule_row.html" %}</template>
+  <div x-ref="ruleList" class="profile-columns">
+    {% for rule in rules %}
+    {% include "fragments/rule_row.html" %}
+    {% endfor %}
+  </div>
+</section>
+{% if bulk_result %}
+<div id="candidate-rules-stat-value" hx-swap-oob="true" class="profile-stat-value" style="color: var(--warn);">{{ rules | length }}</div>
+{% endif %}

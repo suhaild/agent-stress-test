@@ -11,6 +11,7 @@ from agent_stress_test.models import (
     ProfilePersona,
     RegressionCase,
     Rule,
+    Run,
     StressProfile,
     SystemPromptVersion,
 )
@@ -24,7 +25,7 @@ from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.tool_calling_verification_agent import (
     tool_calling_verification_agent,
 )
-from tests.conftest import build_and_run
+from tests.conftest import build_and_run, make_agent_spec
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "agent_stress_test"
 
@@ -95,6 +96,39 @@ def test_save_is_idempotent(sample_agent_spec_path, tmp_path):
             store.save_node(node)
 
         assert len(store.get_nodes(result.run.id)) == len(result.tree.nodes())
+
+
+# --- Phase RE1: list_runs_for_agent ----------------------------------------
+
+
+def test_list_runs_for_agent_filters_by_name_most_recent_first():
+    agent_a = make_agent_spec(name="agent-a")
+    agent_b = make_agent_spec(name="agent-b")
+    with SqliteStore() as store:
+        store.save_run(Run(id="a1", agent_spec=agent_a, provider="fake"))
+        store.save_run(Run(id="b1", agent_spec=agent_b, provider="fake"))
+        store.save_run(Run(id="a2", agent_spec=agent_a, provider="fake"))
+
+        runs = store.list_runs_for_agent("agent-a")
+
+    assert [run.id for run in runs] == ["a2", "a1"]
+
+
+def test_list_runs_for_agent_respects_limit():
+    agent = make_agent_spec(name="agent-c")
+    with SqliteStore() as store:
+        for i in range(3):
+            store.save_run(Run(id=f"run-{i}", agent_spec=agent, provider="fake"))
+
+        runs = store.list_runs_for_agent("agent-c", limit=2)
+
+    assert len(runs) == 2
+
+
+def test_list_runs_for_agent_empty_for_unknown_agent():
+    with SqliteStore() as store:
+        store.save_run(Run(id="a1", agent_spec=make_agent_spec(name="agent-a"), provider="fake"))
+        assert store.list_runs_for_agent("nonexistent") == []
 
 
 # --- Reproducibility: stored data reproduces the same score --------------

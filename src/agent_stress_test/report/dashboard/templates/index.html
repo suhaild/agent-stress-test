@@ -16,7 +16,7 @@
            class="flex items-center gap-4 px-5 py-4 hover:bg-[var(--bg-panel-raised)] transition-colors group">
           <span class="font-mono text-xs text-[var(--ink-faint)] group-hover:text-[var(--accent)] transition-colors">{{ run.id[:8] }}</span>
           <span class="text-sm text-[var(--ink)] truncate flex-1">
-            {{ run.agent_spec.name }} <span class="text-[var(--ink-dim)]">· {{ run.provider }}</span>
+            {{ run.agent_spec.display_name or run.agent_spec.name }} <span class="text-[var(--ink-dim)]">· {{ run.provider }}</span>
           </span>
           <span class="tag {% if run.status == 'completed' %}tag-pass{% elif run.status == 'failed' %}tag-fail{% else %}tag-warn is-live{% endif %}">
             {{ run.status }}

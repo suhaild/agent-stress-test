@@ -1,6 +1,35 @@
-<div id="tactics-picker" x-data="multiSelect()" @click.outside="open = false" class="relative">
-  <label class="field-label block mb-1">Attack Tactics</label>
-  <p class="field-help mb-1.5">Choose which tactics to run — none selected tries them all.</p>
+<div id="tactics-picker" {% if oob %}hx-swap-oob="true"{% endif %} x-data="multiSelect()" @click.outside="open = false" class="relative">
+  <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1.5 mb-1">
+    <label class="field-label has-tip" title="{% if has_profile %}This agent has its own generated stress profile — these are personas built specifically for its domain, not the generic bundled library.{% else %}The bundled adversarial persona library. Generate a profile above for personas tailored to this agent instead.{% endif %}">Attack Tactics</label>
+    <span class="flex items-baseline gap-3 flex-wrap">
+      {% if has_profile %}
+      <a href="/agent-specs/{{ agent_spec_name | urlencode }}/profile" target="_blank" rel="noopener"
+         class="font-mono text-[.65rem] text-[var(--accent)] hover:underline has-tip" style="border:none;"
+         title="Opens the full profile editor in a new tab — review/edit personas, and approve candidate rules.">
+        View full profile →
+      </a>
+      {% endif %}
+      <button type="button"
+              hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/profile/generate"
+              hx-vals='js:{provider: document.querySelector("[name=sim_provider]")?.value || "fake"}'
+              hx-swap="none"
+              hx-indicator="#profile-gen-status"
+              hx-confirm="{% if has_profile %}Regenerate this agent's stress profile? Its saved personas below will be replaced.{% else %}Generate a stress profile tailored to this agent's own domain?{% endif %}"
+              class="btn-ghost text-[.65rem]">
+        {% if has_profile %}Regenerate{% else %}Generate{% endif %} Profile
+      </button>
+    </span>
+  </div>
+  <p class="field-help mb-1.5">
+    Choose which tactics to run — none selected tries them all.
+    <span id="profile-gen-status" class="htmx-indicator text-[var(--accent)]">Generating…</span>
+  </p>
+  {% if candidate_rule_count %}
+  <a href="/agent-specs/{{ agent_spec_name | urlencode }}/profile" target="_blank" rel="noopener"
+     class="field-help block mb-1.5 hover:underline" style="color: var(--warn);">
+    ⚠ This profile also proposed {{ candidate_rule_count }} new behavioral rule{{ "s" if candidate_rule_count != 1 else "" }} — unlike the tactics above, rules need your review before they count. Review →
+  </a>
+  {% endif %}
   <button type="button" @click="open = !open" class="field-input flex items-center justify-between text-left w-full">
     <span x-text="selected.length ? selected.length + ' selected' : 'All tactics'" class="truncate"></span>
     <span class="text-[var(--ink-faint)] ml-2 transition-transform duration-150" :class="{ 'rotate-180': open }">▾</span>
@@ -10,6 +39,7 @@
     {% for tactic in tactics %}
     <label class="tactic-row">
       <input type="checkbox" value="{{ tactic.id }}" class="mt-0.5 accent-[var(--accent)]"
+             :checked="selected.includes('{{ tactic.id }}')"
              @change="$event.target.checked ? selected.push('{{ tactic.id }}') : selected = selected.filter(t => t !== '{{ tactic.id }}')">
       <span class="min-w-0">
         <span class="field-label block">{{ tactic.id.replace('-', ' ') | title }}</span>

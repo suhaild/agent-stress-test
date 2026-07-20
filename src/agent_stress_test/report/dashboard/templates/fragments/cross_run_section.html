@@ -1,0 +1,125 @@
+{% if cross_run %}
+<section class="mb-10">
+  <h2 class="tag-label mb-4">Cross-Run Intelligence</h2>
+
+  <div class="grid gap-5 sm:grid-cols-2">
+    <div class="panel p-5 sm:col-span-2">
+      <p class="field-label mb-3">Reliability Trend — {{ cross_run.trend | length }} run{{ 's' if cross_run.trend | length != 1 else '' }} for this agent</p>
+      {% if trend_points | length > 1 %}
+      <div style="height: 180px;">
+        <canvas></canvas>
+      </div>
+      <script>
+        (function () {
+          var wrap = document.currentScript.previousElementSibling;
+          var canvas = wrap.querySelector('canvas');
+          var points = {{ trend_points | tojson }};
+          var currentRunId = {{ run_id | tojson }};
+          var theme = chartThemeColors();
+          var existing = Chart.getChart(canvas);
+          if (existing) existing.destroy();
+          new Chart(canvas, {
+            type: 'line',
+            data: {
+              labels: points.map(function (p) { return p.label; }),
+              datasets: [{
+                label: 'Reliability %',
+                data: points.map(function (p) { return p.score; }),
+                borderColor: theme.accent,
+                backgroundColor: theme.accent + '33',
+                pointBackgroundColor: points.map(function (p) { return p.run_id === currentRunId ? theme.accent : theme.inkDim; }),
+                pointRadius: points.map(function (p) { return p.run_id === currentRunId ? 5 : 3; }),
+                fill: true,
+                tension: 0.25,
+                borderWidth: 2,
+              }],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales: {
+                y: {
+                  min: 0, max: 100,
+                  ticks: { color: theme.inkDim, font: { family: theme.fontMono, size: 10 } },
+                  grid: { color: theme.gridLine },
+                },
+                x: {
+                  ticks: { color: theme.inkDim, font: { family: theme.fontMono, size: 10 } },
+                  grid: { display: false },
+                },
+              },
+              plugins: { legend: { display: false } },
+            },
+          });
+        })();
+      </script>
+      {% else %}
+      <p class="text-sm text-[var(--ink-dim)]">Not enough history yet — need at least 2 completed runs for this agent to plot a trend.</p>
+      {% endif %}
+    </div>
+
+    <div class="panel p-5">
+      <p class="field-label mb-3">Vs. Previous Run</p>
+      {% if cross_run.diff.previous_run_id %}
+        {% if cross_run.diff.score_delta is not none %}
+        <p class="text-2xl font-mono font-semibold" style="color: {{ 'var(--pass)' if cross_run.diff.score_delta >= 0 else 'var(--fail)' }};">
+          {{ '+' if cross_run.diff.score_delta >= 0 else '' }}{{ '%.0f'|format(cross_run.diff.score_delta * 100) }}%
+        </p>
+        <p class="text-xs text-[var(--ink-faint)] mb-3">reliability score change</p>
+        {% endif %}
+        {% if cross_run.diff.new_cluster_labels %}
+        <p class="text-xs field-label mt-2 mb-1" style="color: var(--fail);">New failure clusters</p>
+        <ul class="text-sm space-y-1 mb-2">
+          {% for label in cross_run.diff.new_cluster_labels %}
+          <li class="text-[var(--ink)]">&bull; {{ label }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if cross_run.diff.resolved_cluster_labels %}
+        <p class="text-xs field-label mt-3 mb-1" style="color: var(--pass);">Resolved since last run</p>
+        <ul class="text-sm space-y-1">
+          {% for label in cross_run.diff.resolved_cluster_labels %}
+          <li class="text-[var(--ink-dim)] line-through">{{ label }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if not cross_run.diff.new_cluster_labels and not cross_run.diff.resolved_cluster_labels %}
+        <p class="text-sm text-[var(--ink-dim)]">No cluster changes vs. the previous run.</p>
+        {% endif %}
+      {% else %}
+      <p class="text-sm text-[var(--ink-dim)]">No earlier completed run for this agent yet — nothing to compare.</p>
+      {% endif %}
+    </div>
+
+    <div class="panel overflow-hidden">
+      <p class="field-label px-4 pt-4 pb-1">Per-Rule Pass Rate</p>
+      {% if cross_run.rule_pass_rates %}
+      <table class="w-full text-sm mt-2">
+        <thead>
+          <tr style="background: var(--bg-panel-raised);">
+            <th class="field-label text-left px-4 py-3">Rule</th>
+            <th class="field-label text-right px-4 py-3">This Run</th>
+            <th class="field-label text-right px-4 py-3">Historical</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rate in cross_run.rule_pass_rates %}
+          <tr{% if not loop.first %} style="border-top: 1px solid var(--wire);"{% endif %}>
+            <td class="px-4 py-3 font-mono text-xs text-[var(--ink)]">{{ rate.rule_id }}</td>
+            <td class="px-4 py-3 text-right font-mono text-xs" style="color: {% if rate.current_pass_rate is none %}var(--ink-faint){% elif rate.current_pass_rate >= 0.8 %}var(--pass){% elif rate.current_pass_rate >= 0.5 %}var(--warn){% else %}var(--fail){% endif %};">
+              {% if rate.current_pass_rate is not none %}{{ '%.0f'|format(rate.current_pass_rate * 100) }}%{% else %}&mdash;{% endif %}
+            </td>
+            <td class="px-4 py-3 text-right font-mono text-xs text-[var(--ink-dim)]">
+              {% if rate.historical_pass_rate is not none %}{{ '%.0f'|format(rate.historical_pass_rate * 100) }}%{% else %}&mdash;{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="px-4 pb-4 text-sm text-[var(--ink-dim)]">No rule verdicts yet to compare.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endif %}

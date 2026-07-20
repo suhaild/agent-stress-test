@@ -215,8 +215,24 @@ class ProviderTargetConfig(BaseModel):
     model: str
 
 
+class SampleAdvancedTargetConfig(BaseModel):
+    """``target: {kind: sample_advanced}`` — the bundled demo agent's harder
+    sibling: same ReAct narration format as the implicit (``target: null``)
+    ``SampleAgent``, but every ``Action`` is executed for real against an
+    in-memory fake tool backend (see ``targets/sample_agent_advanced.py``)
+    instead of the model inventing its own ``Observation``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["sample_advanced"] = "sample_advanced"
+
+
 TargetConfig = Annotated[
-    HttpTargetConfig | PythonTargetConfig | SubprocessTargetConfig | ProviderTargetConfig,
+    HttpTargetConfig
+    | PythonTargetConfig
+    | SubprocessTargetConfig
+    | ProviderTargetConfig
+    | SampleAdvancedTargetConfig,
     Field(discriminator="kind"),
 ]
 
@@ -318,11 +334,22 @@ class AgentSpec(BaseModel):
     for and what field it operates in — read by ``reasoning/profiler.py``'s
     ``AgentProfiler`` so the personas/rules it proposes are grounded in this
     specific agent, not the bundled customer-support tactic library.
+
+    ``name`` is the stable identifier every lookup keys off (regression
+    cases, stress profiles, system-prompt history, cross-run history — see
+    ``Store.list_runs_for_agent`` and friends) and must never change once
+    runs exist against it. ``display_name`` is purely cosmetic — the
+    dashboard shows it instead of ``name`` when set (see
+    ``report/dashboard/server.py``'s ``list_agent_specs``), so a spec can
+    read "Aria - Northwind Outfitters Support" in the UI while keeping a
+    stable snake_case ``name`` underneath. Blank by default, falling back to
+    ``name``, so every pre-existing spec still displays unchanged.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    display_name: str = ""
     purpose: str = ""
     domain: str = ""
     system_prompt: str = Field(min_length=1)
@@ -390,6 +417,18 @@ class Verdict(BaseModel):
     stay distinguishable from one another and from plain node-scoped rule
     verdicts). Defaulting to ``"rule"`` keeps every pre-C verdict and every
     already-persisted row valid unchanged.
+
+    ``applicable`` is distinct from ``passed``: whether the rule's own
+    subject matter was actually in play here at all. A tier-2/conversation
+    rule check that never had anything to violate is ``passed=True,
+    applicable=False`` -- genuinely compliant behavior under real pressure is
+    ``passed=True, applicable=True``. ``rule_coverage`` reads this to avoid
+    crediting a rule as "tested and held up" when it was never actually
+    exercised (see its own docstring). Always ``True`` for tier-1
+    deterministic checks, which only ever fire when their own trigger
+    pattern matched -- applicability is already implicit there. Defaults to
+    ``True`` so every pre-existing verdict, including already-persisted
+    rows, stays valid unchanged.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -404,6 +443,7 @@ class Verdict(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     severity: Severity
     scope: Literal["rule", "tool", "task", "conversation"] = "rule"
+    applicable: bool = True
 
 
 class Cluster(BaseModel):

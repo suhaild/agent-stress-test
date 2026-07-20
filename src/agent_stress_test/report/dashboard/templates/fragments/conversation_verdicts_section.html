@@ -1,4 +1,4 @@
-{% from "macros.html" import severity_tag %}
+{% from "macros.html" import confidence_bar, severity_tag, tier_badge %}
 {% if conversation_groups %}
 <section class="mb-10">
   <h2 class="tag-label mb-4">Conversation Verdicts</h2>
@@ -16,6 +16,7 @@
             <th class="field-label text-left px-4 py-3">Metric</th>
             <th class="field-label text-center px-4 py-3">Result</th>
             <th class="field-label text-center px-4 py-3">Severity</th>
+            <th class="field-label text-center px-4 py-3">Tier / Confidence</th>
             <th class="field-label text-left px-4 py-3">Reason</th>
           </tr>
         </thead>
@@ -28,6 +29,14 @@
             </td>
             <td class="px-4 py-3 text-center">
 {{ severity_tag(verdict.severity, indent='              ') }}
+            </td>
+            <td class="px-4 py-3">
+              <div class="flex items-center justify-center gap-2">
+{{ tier_badge(verdict.tier) }}
+                <span class="flex items-center gap-1.5 font-mono text-xs text-[var(--ink-faint)]">{{ "%.0f"|format(verdict.confidence * 100) }}%
+{{ confidence_bar(verdict.confidence, width=40) }}
+                </span>
+              </div>
             </td>
             <td class="px-4 py-3 text-[var(--ink-dim)]">{{ verdict.reason }}</td>
           </tr>

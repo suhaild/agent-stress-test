@@ -1,44 +1,77 @@
-<div x-data>
+<div x-data id="profile-editor-root">
   {% if profile is none %}
   <div class="panel p-6 text-sm text-[var(--ink-dim)]">
     No stress profile generated yet for this agent — use "Generate Profile" above.
   </div>
   {% else %}
-  <form hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/profile/save"
-        hx-target="#profile-editor" hx-swap="innerHTML" class="space-y-6">
-    <section class="space-y-3">
-      <div class="flex items-center justify-between">
-        <h3 class="tag-label">Personas <span class="text-[var(--ink-faint)] normal-case">(proposed — usable by a run as soon as generated)</span></h3>
-        <button type="button" class="btn-ghost text-xs"
-                @click="$refs.personaList.appendChild($refs.personaTemplate.content.cloneNode(true))">
-          + Add Persona
-        </button>
+  <div class="grid grid-cols-2 gap-3 mb-6">
+    <div class="panel p-4 profile-stat">
+      <div class="profile-stat-value" style="color: var(--pass);">{{ profile.personas | length }}</div>
+      <div class="field-label mt-1">Personas</div>
+      <span class="tag tag-pass mt-2">Ready to run now</span>
+    </div>
+    <div class="panel p-4 profile-stat">
+      <div id="candidate-rules-stat-value" class="profile-stat-value" style="color: var(--warn);">{{ profile.candidate_rules | length }}</div>
+      <div class="field-label mt-1">Candidate Rules</div>
+      <span class="tag tag-warn mt-2">Needs your review</span>
+    </div>
+  </div>
+  <p class="field-help mb-6 text-center">
+    Generated {{ profile.created_at.strftime('%Y-%m-%d %H:%M UTC') }}. Personas are usable by a run as soon as
+    they're generated. Candidate rules are different — they never get copied into this agent's own rules until
+    you edit/approve them below and hit Save.
+  </p>
+
+  <form id="profile-form" hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/profile/save"
+        hx-target="#profile-editor" hx-swap="innerHTML">
+
+    <section class="space-y-2 mb-8">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <h3 class="tag-label">Personas <span class="text-[var(--ink-faint)] normal-case">({{ profile.personas | length }})</span></h3>
+        <span class="flex items-center gap-2">
+          <button type="button" class="btn-ghost text-xs" onclick="_toggleAllProfileCards(this, true)">Expand All</button>
+          <button type="button" class="btn-ghost text-xs" onclick="_toggleAllProfileCards(this, false)">Collapse All</button>
+          <button type="button" class="btn-ghost text-xs" data-dirty
+                  @click="$refs.personaList.appendChild($refs.personaTemplate.content.cloneNode(true))">
+            + Add Persona
+          </button>
+        </span>
       </div>
       <template x-ref="personaTemplate">{% include "fragments/persona_row.html" %}</template>
-      <div x-ref="personaList" class="space-y-3">
+      <div x-ref="personaList" class="profile-columns">
         {% for persona in profile.personas %}
         {% include "fragments/persona_row.html" %}
         {% endfor %}
       </div>
     </section>
 
-    <section class="space-y-3">
-      <div class="flex items-center justify-between">
-        <h3 class="tag-label">Candidate Rules <span class="text-[var(--ink-faint)] normal-case">(proposed — never auto-applied)</span></h3>
-        <button type="button" class="btn-ghost text-xs"
-                @click="$refs.ruleList.appendChild($refs.ruleTemplate.content.cloneNode(true))">
-          + Add Rule
-        </button>
-      </div>
-      <template x-ref="ruleTemplate">{% include "fragments/rule_row.html" %}</template>
-      <div x-ref="ruleList" class="space-y-3">
-        {% for rule in profile.candidate_rules %}
-        {% include "fragments/rule_row.html" %}
-        {% endfor %}
-      </div>
-    </section>
+    {% set rules = profile.candidate_rules %}
+    {% include "fragments/rules_section.html" %}
 
-    <button type="submit" class="btn-stamp">Save Profile Edits</button>
+    <div class="profile-save-bar">
+      <span id="profile-unsaved-badge" class="tag tag-warn" hidden>unsaved changes</span>
+      <button type="submit" class="btn-stamp">Save Profile Edits</button>
+    </div>
   </form>
+  <script>
+    function _toggleAllProfileCards(button, open) {
+      var section = button.closest('section');
+      if (!section) return;
+      Array.prototype.forEach.call(section.querySelectorAll('details.profile-card'), function (d) {
+        d.open = open;
+      });
+    }
+    (function () {
+      var form = document.getElementById('profile-form');
+      var badge = document.getElementById('profile-unsaved-badge');
+      if (!form || !badge) return;
+      var markDirty = function () { badge.hidden = false; };
+      form.addEventListener('input', markDirty);
+      form.addEventListener('change', markDirty);
+      form.addEventListener('click', function (e) {
+        if (e.target.closest('[data-dirty]')) markDirty();
+      });
+    })();
+  </script>
   {% endif %}
 </div>

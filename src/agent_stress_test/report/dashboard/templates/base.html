@@ -17,346 +17,30 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Tailwind's dynamic-JIT CDN build can't be given an integrity hash (it
+       fetches/compiles utility CSS on the fly, so there's no one fixed
+       response to pin) — accepted, see RE-DEP in the build plan. Every other
+       script below is pinned to an exact version and an SRI hash generated
+       from that exact file (openssl dgst -sha384 -binary FILE | openssl
+       base64 -A) — never hand-written, since a fabricated hash just breaks
+       loading instead of guarding anything. -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-  <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
-  <script defer src="https://unpkg.com/@alpinejs/collapse@3.14.1/dist/cdn.min.js"></script>
-  <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
-  <style>
-    [x-cloak] { display: none !important; }
-
-    :root {
-      --bg: #0d0b09;
-      --bg-panel: #16130f;
-      --bg-panel-raised: #1d1811;
-      --wire: #35302a;
-      --grid-line: rgba(255, 255, 255, .045);
-      --ink: #f3ede0;
-      --ink-dim: #9a9184;
-      --ink-faint: #63594c;
-      --accent: #ff5a1f;
-      --accent-ink: #180a02;
-      --pass: #5fd9ae;
-      --pass-dim: #16362b;
-      --warn: #ffb020;
-      --warn-dim: #4a3512;
-      --fail: #ff4433;
-      --fail-dim: #45150f;
-      --noise-opacity: .035;
-      --font-display: 'Big Shoulders', sans-serif;
-      --font-mono: 'IBM Plex Mono', monospace;
-      --font-body: 'IBM Plex Sans', sans-serif;
-    }
-
-    /* Light theme: follows system preference by default; the toggle button
-       stamps data-theme on <html> to pin an explicit choice, which wins
-       over the media query in either direction (see [data-theme] rules). */
-    @media (prefers-color-scheme: light) {
-      :root {
-        --bg: #f2ede1;
-        --bg-panel: #fbf8f1;
-        --bg-panel-raised: #ece3cf;
-        --wire: #c7b99a;
-        --grid-line: rgba(35, 25, 10, .07);
-        --ink: #201a12;
-        --ink-dim: #55493a;
-        --ink-faint: #78694f;
-        --pass: #0f8f66;
-        --pass-dim: #e2f3ea;
-        --warn: #a5680a;
-        --warn-dim: #faf0d9;
-        --fail: #c22c2c;
-        --fail-dim: #fbe6e4;
-        --noise-opacity: .02;
-      }
-    }
-    :root[data-theme="dark"] {
-      --bg: #0d0b09;
-      --bg-panel: #16130f;
-      --bg-panel-raised: #1d1811;
-      --wire: #35302a;
-      --grid-line: rgba(255, 255, 255, .045);
-      --ink: #f3ede0;
-      --ink-dim: #9a9184;
-      --ink-faint: #63594c;
-      --pass: #5fd9ae;
-      --pass-dim: #16362b;
-      --warn: #ffb020;
-      --warn-dim: #4a3512;
-      --fail: #ff4433;
-      --fail-dim: #45150f;
-      --noise-opacity: .035;
-    }
-    :root[data-theme="light"] {
-      --bg: #f2ede1;
-      --bg-panel: #fbf8f1;
-      --bg-panel-raised: #ece3cf;
-      --wire: #c7b99a;
-      --grid-line: rgba(35, 25, 10, .07);
-      --ink: #201a12;
-      --ink-dim: #55493a;
-      --ink-faint: #78694f;
-      --pass: #0f8f66;
-      --pass-dim: #e2f3ea;
-      --warn: #a5680a;
-      --warn-dim: #faf0d9;
-      --fail: #c22c2c;
-      --fail-dim: #fbe6e4;
-      --noise-opacity: .02;
-    }
-
-    @property --pct { syntax: '<number>'; inherits: false; initial-value: 0; }
-
-    * { font-family: var(--font-body); }
-
-    body {
-      background-color: var(--bg);
-      background-image:
-        linear-gradient(var(--grid-line) 1px, transparent 1px),
-        linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-      background-size: 28px 28px;
-      color: var(--ink);
-      position: relative;
-      transition: background-color .2s, color .2s;
-    }
-    body::after {
-      content: "";
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      opacity: var(--noise-opacity);
-      mix-blend-mode: overlay;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    }
-
-    .hazard-bar {
-      height: 5px;
-      background: repeating-linear-gradient(135deg, var(--accent) 0 10px, transparent 10px 20px);
-      opacity: .55;
-    }
-
-    .brand-mark {
-      font-family: var(--font-display);
-      font-weight: 800;
-      text-transform: uppercase;
-      color: var(--ink);
-      line-height: 1;
-    }
-
-    .tag-label {
-      font-family: var(--font-mono);
-      font-size: .68rem;
-      letter-spacing: .16em;
-      text-transform: uppercase;
-      color: var(--ink-dim);
-    }
-    .tag-label::before { content: "["; color: var(--accent); margin-right: .35em; }
-    .tag-label::after { content: "]"; color: var(--accent); margin-left: .35em; }
-
-    .panel {
-      position: relative;
-      background: var(--bg-panel);
-      border: 1px solid var(--wire);
-      border-radius: 3px;
-      transition: background-color .2s, border-color .2s;
-    }
-    .panel::before, .panel::after {
-      content: "";
-      position: absolute;
-      width: 12px;
-      height: 12px;
-      pointer-events: none;
-    }
-    .panel::before { top: 0; left: 0; border-top: 2px solid var(--accent); border-left: 2px solid var(--accent); }
-    .panel::after { bottom: 0; right: 0; border-bottom: 2px solid var(--accent); border-right: 2px solid var(--accent); }
-
-    .field-label {
-      font-family: var(--font-mono);
-      font-size: .68rem;
-      letter-spacing: .1em;
-      text-transform: uppercase;
-      color: var(--ink-dim);
-    }
-    .field-help {
-      font-family: var(--font-body);
-      font-size: .72rem;
-      color: var(--ink-faint);
-      line-height: 1.3;
-    }
-    .field-input {
-      width: 100%;
-      background: var(--bg-panel-raised);
-      border: 1px solid var(--wire);
-      border-radius: 2px;
-      padding: .55rem .7rem;
-      font-size: .875rem;
-      color: var(--ink);
-      transition: border-color .15s, box-shadow .15s, background-color .2s;
-    }
-    .field-input::placeholder { color: var(--ink-faint); }
-    .field-input:focus {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
-    }
-
-    .btn-stamp {
-      font-family: var(--font-mono);
-      font-weight: 600;
-      font-size: .78rem;
-      letter-spacing: .12em;
-      text-transform: uppercase;
-      background: var(--accent);
-      color: var(--accent-ink);
-      border: 1px solid #ffdcc4;
-      box-shadow: 3px 3px 0 rgba(0, 0, 0, .45);
-      padding: .7rem 1rem;
-      transition: transform .12s, box-shadow .12s;
-      cursor: pointer;
-    }
-    .btn-stamp:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 rgba(0, 0, 0, .45); }
-    .btn-stamp:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 rgba(0, 0, 0, .45); }
-
-    .btn-ghost {
-      font-family: var(--font-mono);
-      font-size: .68rem;
-      letter-spacing: .1em;
-      text-transform: uppercase;
-      color: var(--ink-dim);
-      border: 1px solid var(--wire);
-      background: transparent;
-      padding: .5rem .9rem;
-      border-radius: 2px;
-      transition: color .15s, border-color .15s;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .btn-ghost:hover { color: var(--accent); border-color: var(--accent); }
-
-    .tactic-panel {
-      position: absolute;
-      z-index: 20;
-      left: 0;
-      right: 0;
-      margin-top: .4rem;
-      padding: .5rem;
-      background: var(--bg-panel);
-      border: 1px solid var(--wire);
-      border-radius: 3px;
-      box-shadow: 0 16px 32px -12px rgba(0, 0, 0, .55);
-      max-height: 320px;
-      overflow-y: auto;
-    }
-
-    .tactic-row {
-      display: flex;
-      align-items: flex-start;
-      gap: .65rem;
-      padding: .6rem .65rem;
-      border: 1px solid var(--wire);
-      border-radius: 2px;
-      cursor: pointer;
-      transition: background-color .15s, border-color .15s;
-    }
-    .tactic-row + .tactic-row { margin-top: .4rem; }
-    .tactic-row:hover { border-color: var(--accent); }
-    .tactic-row:has(input:checked) { background: var(--bg-panel-raised); border-color: var(--accent); }
-
-    .tag {
-      font-family: var(--font-mono);
-      font-size: .68rem;
-      font-weight: 500;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-      padding: .32rem .7rem .32rem 1.15rem;
-      position: relative;
-      border: 1px solid currentColor;
-      display: inline-flex;
-      align-items: center;
-      white-space: nowrap;
-    }
-    .tag::before {
-      content: "";
-      position: absolute;
-      left: .45rem;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: currentColor;
-    }
-    .tag-pass { color: var(--pass); background: var(--pass-dim); }
-    .tag-fail { color: var(--fail); background: var(--fail-dim); }
-    .tag-warn { color: var(--warn); background: var(--warn-dim); }
-    .tag-warn.is-live::before { animation: blink 1.1s steps(2, jump-none) infinite; }
-    @keyframes blink { 50% { opacity: .15; } }
-
-    .icon-sun, .icon-moon { display: none; }
-    .icon-moon { display: inline; }
-    @media (prefers-color-scheme: light) {
-      .icon-moon { display: none; }
-      .icon-sun { display: inline; }
-    }
-    :root[data-theme="dark"] .icon-moon { display: inline; }
-    :root[data-theme="dark"] .icon-sun { display: none; }
-    :root[data-theme="light"] .icon-sun { display: inline; }
-    :root[data-theme="light"] .icon-moon { display: none; }
-
-    .dial {
-      --pct: 0;
-      width: 152px;
-      height: 152px;
-      border-radius: 50%;
-      padding: 9px;
-      flex-shrink: 0;
-      transition: --pct 1.1s cubic-bezier(.16, 1, .3, 1);
-      background: conic-gradient(var(--dial-color, var(--accent)) calc(var(--pct) * 1%), var(--wire) 0);
-    }
-    .dial-face {
-      width: 100%;
-      height: 100%;
-      border-radius: 50%;
-      background: var(--bg-panel);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-    }
-    .dial-value { font-family: var(--font-mono); font-size: 2rem; font-weight: 600; }
-    .dial-caption { font-family: var(--font-mono); font-size: .58rem; letter-spacing: .22em; color: var(--ink-dim); margin-top: .15rem; text-transform: uppercase; }
-
-    .log-line { animation: logIn .35s ease-out; }
-    @keyframes logIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
-
-    .reveal { animation: revealUp .5s ease-out both; }
-    @keyframes revealUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-
-    .toast {
-      font-family: var(--font-body);
-      font-size: .82rem;
-      display: flex;
-      align-items: flex-start;
-      gap: .75rem;
-      padding: .75rem .9rem;
-      border-radius: 3px;
-      border: 1px solid var(--wire);
-      border-left: 3px solid var(--fail);
-      background: var(--bg-panel);
-      box-shadow: 0 16px 32px -12px rgba(0, 0, 0, .55);
-      max-width: 22rem;
-      pointer-events: auto;
-    }
-    .toast-warn { border-left-color: var(--warn); }
-    .toast-icon { font-family: var(--font-mono); font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; flex-shrink: 0; margin-top: .1rem; }
-    .toast-fail .toast-icon { color: var(--fail); }
-    .toast-warn .toast-icon { color: var(--warn); }
-    .toast-message { color: var(--ink); flex: 1; line-height: 1.4; word-break: break-word; }
-    .toast-close { color: var(--ink-faint); cursor: pointer; background: none; border: none; flex-shrink: 0; font-size: .85rem; line-height: 1; padding: 0; }
-    .toast-close:hover { color: var(--ink); }
-  </style>
+  <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"
+          integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
+          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"
+          integrity="sha384-OZrRw8/Zvv0VFGJJF6TN3gABVZvvO60Xz7RWkQKAmoRe+t1dc5J/ySJvXbpL+N+Q"
+          crossorigin="anonymous"></script>
+  <script defer src="https://unpkg.com/@alpinejs/collapse@3.14.1/dist/cdn.min.js"
+          integrity="sha384-NArNwzWsUSF+kY2lgW4YriEkjLqi+J+za6HrENUn/3nZqkBnWbxV22kCJEK5Uu6n"
+          crossorigin="anonymous"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"
+          integrity="sha384-l8f0VcPi/M1iHPv8egOnY/15TDwqgbOR1anMIJWvU6nLRgZVLTLSaNqi/TOoT5Fh"
+          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/chart.js@4.5.1/dist/chart.umd.min.js"
+          integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
+          crossorigin="anonymous"></script>
+  {% include "_styles.html" %}
 </head>
 <body class="min-h-screen antialiased">
   <header class="px-6 md:px-10 py-6 flex items-center justify-between">
@@ -411,6 +95,19 @@
     // initTree only scans the swapped subtree, so nodes htmx didn't touch
     // (already initialized) are left alone; no double-init.
     document.body.addEventListener('htmx:afterSettle', e => Alpine.initTree(e.detail.elt));
+    // Reads the live theme's CSS custom properties so a Chart.js instance
+    // (see fragments/cross_run_section.html) never hardcodes a color that'd
+    // drift from the light/dark theme toggle above.
+    function chartThemeColors() {
+      var style = getComputedStyle(document.documentElement);
+      var read = function (name) { return style.getPropertyValue(name).trim(); };
+      return {
+        accent: read('--accent'), pass: read('--pass'), warn: read('--warn'),
+        fail: read('--fail'), ink: read('--ink'), inkDim: read('--ink-dim'),
+        gridLine: read('--grid-line'), wire: read('--wire'),
+        fontMono: read('--font-mono'),
+      };
+    }
     function pushToast(message, kind) {
       var toasts = Alpine.store('toasts');
       var last = toasts[toasts.length - 1];

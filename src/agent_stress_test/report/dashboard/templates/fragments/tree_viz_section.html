@@ -1,0 +1,36 @@
+<section class="mb-10">
+  <h2 class="tag-label mb-4">Conversation Tree</h2>
+  {% if tree_viz %}
+  <div class="panel p-5">
+    <div class="flex gap-6 overflow-x-auto pb-1">
+      {% for lane in tree_viz %}
+      {% set spacing = 34 %}
+      {% set height = (lane.nodes | length - 1) * spacing + 20 %}
+      <div class="flex-shrink-0 text-center" style="width: 68px;">
+        <p class="font-mono text-[.62rem] text-[var(--ink-faint)] uppercase tracking-wide mb-1 truncate" title="{{ lane.label }}">{{ lane.label }}</p>
+        <svg width="24" height="{{ height }}" viewBox="0 0 24 {{ height }}" role="img" aria-label="conversation path: {{ lane.label }}">
+          {% if lane.nodes | length > 1 %}
+          <line x1="12" y1="10" x2="12" y2="{{ height - 10 }}" style="stroke: var(--wire); stroke-width: 2;"></line>
+          {% endif %}
+          {% for node in lane.nodes %}
+          {% set cy = 10 + loop.index0 * spacing %}
+          <circle cx="12" cy="{{ cy }}" r="6" style="
+              fill: {% if node.status == 'fail' %}var(--fail){% elif node.status == 'near_miss' %}var(--warn){% else %}var(--pass){% endif %};
+              stroke: var(--bg-panel); stroke-width: 1.5;">
+            <title>{{ node.tactic or node.node_id }} — {{ node.status }}</title>
+          </circle>
+          {% endfor %}
+        </svg>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="flex items-center gap-4 mt-4 font-mono text-[.65rem] text-[var(--ink-faint)]">
+      <span class="flex items-center gap-1.5"><span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--pass);"></span> pass</span>
+      <span class="flex items-center gap-1.5"><span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--warn);"></span> near-miss</span>
+      <span class="flex items-center gap-1.5"><span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fail);"></span> fail</span>
+    </div>
+  </div>
+  {% else %}
+  <div class="panel p-5 text-sm text-[var(--ink-dim)]">No conversation data yet.</div>
+  {% endif %}
+</section>

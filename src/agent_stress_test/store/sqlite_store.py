@@ -117,6 +117,19 @@ class SqliteStore(Store):
         ).fetchall()
         return [Run.model_validate_json(row[0]) for row in rows]
 
+    def list_runs_for_agent(self, agent_spec_name: str, limit: int = 50) -> list[Run]:
+        """Most-recent-first runs for one agent spec — Phase RE1's cross-run
+        intelligence (trend/diff/pass-rate). ``agent_spec_name`` isn't its own
+        indexed column (unlike ``regression_cases``/``system_prompt_versions``
+        — those are keyed on it from the start); ``runs`` only ever stored
+        ``(id, data)`` (see ``_SCHEMA``), and at this project's scale a full
+        scan + filter in Python is simpler than a migration to add and
+        backfill a column for it.
+        """
+        rows = self._conn.execute("SELECT data FROM runs ORDER BY rowid DESC").fetchall()
+        matching = (Run.model_validate_json(row[0]) for row in rows)
+        return [run for run in matching if run.agent_spec.name == agent_spec_name][:limit]
+
     # --- nodes -----------------------------------------------------------
 
     def save_node(self, node: Node) -> None:

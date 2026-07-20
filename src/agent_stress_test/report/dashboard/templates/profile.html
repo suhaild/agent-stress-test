@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "macros.html" import model_picker %}
 {% block title %}Stress Profile — {{ agent_spec_name }}{% endblock %}
 {% block content %}
 <div class="mb-8 reveal">
@@ -14,14 +15,10 @@
     <div class="flex-1 min-w-[14rem]">
       <label class="field-label block mb-1">Profiler Model</label>
       <p class="field-help mb-1.5">The LLM that proposes personas + candidate rules for this agent.</p>
-      <input type="text" name="provider" value="fake" class="field-input font-mono">
+      {{ model_picker('provider', models, 'fake', models[0].label) }}
     </div>
     <button type="submit" class="btn-stamp">{% if profile %}Regenerate{% else %}Generate{% endif %} Profile →</button>
   </form>
-  <p class="font-mono text-[.68rem] text-[var(--ink-faint)] mt-2">
-    Proposed only — nothing here is applied automatically. Candidate rules never get copied into this
-    agent's own rules without a human doing it by hand.
-  </p>
 </section>
 
 <section class="reveal" style="animation-delay: 120ms">

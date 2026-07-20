@@ -19,10 +19,18 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 
 from agent_stress_test.composition import (
@@ -31,13 +39,16 @@ from agent_stress_test.composition import (
     build_target,
     cluster_and_persist,
     load_bundle,
+    load_cross_run_bundle,
+    reconcile_interrupted_runs,
+    remove_candidate_rule,
     resolve_cluster_remediation_target,
     resolve_sim_provider_name,
     resolve_tactics,
 )
 from agent_stress_test.config import load_agent_spec, load_settings
-from agent_stress_test.config_writer import apply_system_prompt
-from agent_stress_test.models import AgentSpec, Run, Verdict
+from agent_stress_test.config_writer import apply_candidate_rule, apply_system_prompt
+from agent_stress_test.models import AgentSpec, Rule, Run, Verdict
 from agent_stress_test.orchestration.regression import (
     RegressionRunner,
     promote_clusters_to_cases,
@@ -50,12 +61,16 @@ from agent_stress_test.orchestration.reliability import (
     near_miss_ranking,
     score_run,
 )
+from agent_stress_test.orchestration.rule_coverage import rule_coverage
 from agent_stress_test.orchestration.runner import build_runner
 from agent_stress_test.orchestration.tree import ConversationTree
+from agent_stress_test.orchestration.tree_viz import build_tree_viz
 from agent_stress_test.reasoning.judge import build_two_tier_judge
+from agent_stress_test.report.export import build_report_bundle, to_json, to_markdown
 from agent_stress_test.reasoning.profiler import AgentProfiler
 from agent_stress_test.reasoning.remediation import RemediationSuggester
 from agent_stress_test.reasoning.simulator import default_registry
+from agent_stress_test.reasoning.summary import RunSummarizer
 from agent_stress_test.report.dashboard.live_events import (
     live_trees,
     live_trees_lock,
@@ -67,7 +82,12 @@ from agent_stress_test.report.dashboard.prompt_diff import (
     prompt_version_history,
     record_prompt_version,
 )
-from agent_stress_test.report.shared import conversation_verdicts_by_leaf, ranked_clusters
+from agent_stress_test.report.shared import (
+    conversation_verdicts_by_leaf,
+    executive_summary_context,
+    ranked_clusters,
+    trend_chart_points,
+)
 from agent_stress_test.store.migrations import ensure_current_or_raise
 from agent_stress_test.store.sqlite_store import SqliteStore
 
@@ -86,14 +106,74 @@ _SCORING_MODELS = {
 _CONFIG_AGENTS_DIR = Path(__file__).resolve().parents[4] / "config" / "agents"
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
+# The New Run form's Target Agent card shows the short label (fits a small
+# badge without wrapping) instead of the raw `target.kind` string (or
+# "sample" for the implicit/unset default); the detail is the same
+# information spelled out, shown as a hover tooltip. Purely display — never
+# read back from the client.
+_TARGET_KIND_INFO = {
+    "sample": (
+        "Bundled Agent · Narrated Tools",
+        "The bundled demo agent — narrates tool use as free-text ReAct reasoning; nothing is actually executed.",
+    ),
+    "sample_advanced": (
+        "Bundled Agent · Real Tools",
+        "The bundled demo agent's harder sibling — every declared tool call actually executes against an in-memory fake backend.",
+    ),
+    "http": (
+        "HTTP Endpoint",
+        "A bring-your-own agent reached over HTTP/JSON (see targets/http_agent.py).",
+    ),
+    "python": (
+        "Python Function",
+        "A bring-your-own agent wired in-process as a plain Python callable (see targets/python_fn.py).",
+    ),
+    "subprocess": (
+        "Subprocess",
+        "A bring-your-own agent driven over stdin/stdout JSON framing — can be written in any language (see targets/subprocess_agent.py).",
+    ),
+    "provider": (
+        "Direct Model · Native Tools",
+        "A bare model id driven directly through litellm's own tool-calling, using this spec's tools/system prompt (see targets/provider_agent.py).",
+    ),
+}
+
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
-def list_agent_specs() -> list[dict[str, str]]:
-    """The configured agent specs, as ``[{"id": <filename>, "name": <agent_spec.name>}]``."""
+def list_agent_specs() -> list[dict[str, Any]]:
+    """The configured agent specs, as ``[{"id": <filename>, "name": <display
+    name>, ...}]`` — "name" here is the spec's ``display_name`` if it set one
+    (cosmetic), else its stable ``name`` (see ``AgentSpec.display_name``'s
+    docstring); "id" is always the real filename, since that's what
+    ``_resolve_agent_spec_path`` looks up.
+
+    The remaining fields (``domain``, ``purpose``, ``tools_count``,
+    ``tool_names``, ``rules_count``, ``target_kind_label``,
+    ``target_kind_detail``) are static, file-only metadata — no store lookup
+    — embedded into the New Run form's Target Agent card so switching the
+    agent dropdown can update that card instantly, client-side, without a
+    round trip (see ``run_form.html``'s ``AGENT_SPECS_META``)."""
+    specs = [
+        (path.name, load_agent_spec(path)) for path in sorted(_CONFIG_AGENTS_DIR.glob("*.yaml"))
+    ]
     return [
-        {"id": path.name, "name": load_agent_spec(path).name}
-        for path in sorted(_CONFIG_AGENTS_DIR.glob("*.yaml"))
+        {
+            "id": filename,
+            "name": spec.display_name or spec.name,
+            "domain": spec.domain,
+            "purpose": spec.purpose,
+            "tools_count": len(spec.tools),
+            "tool_names": [tool.name for tool in spec.tools],
+            "rules_count": len(spec.rules),
+            "target_kind_label": _TARGET_KIND_INFO.get(
+                spec.target.kind if spec.target else "sample", ("Custom Target", "")
+            )[0],
+            "target_kind_detail": _TARGET_KIND_INFO.get(
+                spec.target.kind if spec.target else "sample", ("Custom Target", "")
+            )[1],
+        }
+        for filename, spec in specs
     ]
 
 
@@ -108,21 +188,39 @@ def list_tactics() -> list[dict[str, str]]:
     ]
 
 
-def _persona_options_for_spec(agent_spec: AgentSpec, store: SqliteStore) -> list[dict[str, str]]:
-    """The run form's per-agent persona picker options: this agent's own
-    stress profile personas if one has been generated, else the bundled
-    tactic library.
+def _personas_picker_context(agent_spec: AgentSpec, store: SqliteStore) -> dict:
+    """The run form's per-agent Attack Tactics picker context
+    (``fragments/personas_picker.html``): this agent's own stress profile
+    personas if one has been generated, else the bundled tactic library --
+    plus its name and whether it already has a saved profile, so the
+    picker's inline "Generate/Regenerate Profile" action knows which agent to
+    profile and how to word its own button.
 
-    Fully consumable by a real run: ``build_runner()`` (see
+    ``tactics`` is fully consumable by a real run: ``build_runner()`` (see
     ``orchestration/runner.py``'s ``_profile_extra_personas``) merges this
     same spec's approved profile personas in automatically, and
     ``resolve_tactics``'s ``extra_valid`` (see ``_execute_run`` below)
     accepts a profile-sourced name explicitly selected here.
+
+    ``candidate_rule_count`` surfaces the profiler's *other* output --
+    proposed rules -- which nothing in the run form otherwise mentions, even
+    though generating a profile always produces both. Nothing here applies
+    them; it's just a nudge to go review them on the profile page.
     """
     profile = store.get_stress_profile(agent_spec.name)
-    if profile is not None and profile.personas:
-        return [{"id": p.name, "description": p.scenario} for p in profile.personas]
-    return list_tactics()
+    has_profile = profile is not None and bool(profile.personas)
+    tactics = (
+        [{"id": p.name, "description": p.scenario} for p in profile.personas]
+        if has_profile
+        else list_tactics()
+    )
+    candidate_rule_count = len(profile.candidate_rules) if profile else 0
+    return {
+        "tactics": tactics,
+        "agent_spec_name": agent_spec.name,
+        "has_profile": has_profile,
+        "candidate_rule_count": candidate_rule_count,
+    }
 
 
 def list_models() -> list[dict[str, str]]:
@@ -238,25 +336,62 @@ def _execute_run(
             live_trees.pop(run_id, None)
 
 
+def _require_terminal_run(store: SqliteStore, run_id: str) -> Run:
+    """The export/lock/suggest-fix routes all read straight from the store
+    via ``load_bundle`` -- nodes/verdicts/clusters are only ever persisted
+    once a run finishes (see ``_execute_run``/``runner.py``'s ``_persist``),
+    so calling any of them against a still-``pending``/``running`` run
+    doesn't error, it just silently returns a near-empty report/bundle. That
+    reads as a broken export rather than "come back once it's done" -- this
+    turns it into a clear, explicit error instead."""
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"No run found with id '{run_id}'.")
+    if run.status not in ("completed", "failed"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Run '{run_id[:8]}' is still {run.status} -- its report isn't ready yet. "
+                "Wait for the run to finish before exporting, locking a cluster, or "
+                "requesting a suggested fix."
+            ),
+        )
+    return run
+
+
 def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     """Build the dashboard app. ``db_path`` is fixed here, at process startup —
     never accepted from a client request (see module docstring on trust)."""
     ensure_current_or_raise(db_path)
+    with SqliteStore(db_path) as store:
+        reconcile_interrupted_runs(store)
     app = FastAPI(title="Agent Stress-Test Dashboard")
     app.state.db_path = db_path
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> HTMLResponse:
+        agent_specs = list_agent_specs()
         with SqliteStore(app.state.db_path) as store:
             recent_runs = store.list_runs()
+            # The Attack Tactics picker's initial render must match whatever
+            # get_personas_picker would return for the <select>'s own default
+            # (first) option -- otherwise the picker shown on page load is
+            # for the wrong agent until the user touches the dropdown.
+            picker_context = (
+                _personas_picker_context(
+                    load_agent_spec(_CONFIG_AGENTS_DIR / agent_specs[0]["id"]), store
+                )
+                if agent_specs
+                else {"tactics": list_tactics(), "agent_spec_name": "", "has_profile": False}
+            )
         return templates.TemplateResponse(
             request,
             "index.html",
             {
-                "agent_specs": list_agent_specs(),
+                "agent_specs": agent_specs,
                 "recent_runs": recent_runs,
-                "tactics": list_tactics(),
                 "models": list_models(),
+                **picker_context,
             },
             # The recent-runs list is a point-in-time snapshot; without this,
             # navigating back to "/" (browser back/forward) can restore a
@@ -268,7 +403,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
         )
 
     @app.get("/agent-specs")
-    def get_agent_specs() -> list[dict[str, str]]:
+    def get_agent_specs() -> list[dict[str, Any]]:
         return list_agent_specs()
 
     @app.get("/agent-specs/personas", response_class=HTMLResponse)
@@ -279,10 +414,8 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         agent_spec = load_agent_spec(path)
         with SqliteStore(app.state.db_path) as store:
-            options = _persona_options_for_spec(agent_spec, store)
-        return templates.TemplateResponse(
-            request, "fragments/personas_picker.html", {"tactics": options}
-        )
+            context = _personas_picker_context(agent_spec, store)
+        return templates.TemplateResponse(request, "fragments/personas_picker.html", context)
 
     @app.post("/runs")
     def post_run(
@@ -356,13 +489,20 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                 reliability: ReliabilityReport | None = (
                     score_run(tree.nodes(), verdicts) if tree.nodes() else None
                 )
+                cross_run = None
             else:
                 run, tree, verdicts, clusters = load_bundle(store, run_id)
                 reliability = score_run(tree.nodes(), verdicts)
+                # Phase RE1: only meaningful once a run has actually finished
+                # and been clustered — a live run's clusters are always empty
+                # (see above), which would misreport every historical cluster
+                # as "resolved".
+                cross_run = load_cross_run_bundle(store, run, clusters, verdicts)
 
             locked = locked_cluster_ids(store, run.agent_spec.name)
 
         failures: list[Verdict] = [v for v in verdicts if not v.passed]
+        near_misses = near_miss_ranking(tree.nodes(), verdicts)
         return templates.TemplateResponse(
             request,
             "run.html",
@@ -375,8 +515,19 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
                 "locked_cluster_ids": locked,
                 "failures": failures,
                 "tree": tree,
-                "near_misses": near_miss_ranking(tree.nodes(), verdicts),
+                "near_misses": near_misses,
                 "conversation_groups": conversation_verdicts_by_leaf(verdicts),
+                "cross_run": cross_run,
+                "trend_points": trend_chart_points(cross_run.trend) if cross_run else [],
+                "rule_coverage": rule_coverage(run.agent_spec.rules, verdicts),
+                "tree_viz": build_tree_viz(tree, verdicts),
+                **(
+                    executive_summary_context(
+                        tree.nodes(), verdicts, clusters, reliability, near_misses
+                    )
+                    if reliability is not None
+                    else {"summary": None, "fix_first": []}
+                ),
             },
         )
 
@@ -410,6 +561,85 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             {"run_id": run_id, "reliability": reliability},
         )
 
+    @app.post("/runs/{run_id}/summary/llm", response_class=HTMLResponse)
+    def post_llm_summary(
+        request: Request, run_id: str, provider: str = Form("fake")
+    ) -> HTMLResponse:
+        """Phase RE2's opt-in LLM rephrasing — only ever spends a real call
+        (network + cost) when a user explicitly clicks for it; the
+        deterministic summary above it is always shown for free."""
+        with SqliteStore(app.state.db_path) as store:
+            run, tree, verdicts, clusters = load_bundle(store, run_id)
+        reliability = score_run(tree.nodes(), verdicts)
+        near_misses = near_miss_ranking(tree.nodes(), verdicts)
+        summary = executive_summary_context(
+            tree.nodes(), verdicts, clusters, reliability, near_misses
+        )["summary"]
+
+        llm_text = RunSummarizer(build_provider(provider)).summarize(summary.text)
+        return templates.TemplateResponse(
+            request, "fragments/llm_summary.html", {"llm_text": llm_text}
+        )
+
+    @app.get("/runs/{run_id}/export.html", response_class=HTMLResponse)
+    def get_export_html(request: Request, run_id: str) -> HTMLResponse:
+        """Phase RE4: a static, self-contained HTML export — no htmx/SSE/
+        Alpine wiring (``run_id=None`` throughout suppresses every fragment's
+        interactive controls, e.g. the Lock/Suggest-Fix buttons and the
+        scoring-model picker), so it's safe to save or forward standalone.
+        "PDF export" is the browser's own Print-to-PDF on this same page
+        (see the "Print / Save as PDF" button + the print CSS in
+        ``_styles.html``) rather than a server-side PDF library — see the
+        build plan's RE4 notes on why."""
+        with SqliteStore(app.state.db_path) as store:
+            _require_terminal_run(store, run_id)
+            run, tree, verdicts, clusters = load_bundle(store, run_id)
+        bundle = build_report_bundle(run, tree, verdicts, clusters)
+        return templates.TemplateResponse(
+            request,
+            "export.html",
+            {
+                "run": run,
+                "run_id": None,
+                "run_provider": run.provider,
+                "reliability": bundle.reliability,
+                "ranked_clusters": bundle.ranked_clusters,
+                "locked_cluster_ids": set(),
+                "failures": [v for v in verdicts if not v.passed],
+                "tree": tree,
+                "near_misses": bundle.near_misses,
+                "conversation_groups": bundle.conversation_groups,
+                "rule_coverage": bundle.rule_coverage,
+                "summary": bundle.summary,
+                "fix_first": bundle.fix_first,
+                "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            },
+        )
+
+    @app.get("/runs/{run_id}/export.json")
+    def get_export_json(run_id: str) -> Response:
+        with SqliteStore(app.state.db_path) as store:
+            _require_terminal_run(store, run_id)
+            run, tree, verdicts, clusters = load_bundle(store, run_id)
+        bundle = build_report_bundle(run, tree, verdicts, clusters)
+        return Response(
+            content=to_json(bundle),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="report-{run_id[:8]}.json"'},
+        )
+
+    @app.get("/runs/{run_id}/export.md")
+    def get_export_markdown(run_id: str) -> PlainTextResponse:
+        with SqliteStore(app.state.db_path) as store:
+            _require_terminal_run(store, run_id)
+            run, tree, verdicts, clusters = load_bundle(store, run_id)
+        bundle = build_report_bundle(run, tree, verdicts, clusters)
+        return PlainTextResponse(
+            content=to_markdown(bundle),
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="report-{run_id[:8]}.md"'},
+        )
+
     @app.get("/runs/{run_id}/events")
     def run_events(run_id: str) -> StreamingResponse:
         with SqliteStore(app.state.db_path) as store:
@@ -422,6 +652,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     @app.post("/runs/{run_id}/clusters/{cluster_id}/lock", response_class=HTMLResponse)
     def post_lock_cluster(request: Request, run_id: str, cluster_id: str) -> HTMLResponse:
         with SqliteStore(app.state.db_path) as store:
+            _require_terminal_run(store, run_id)
             run, tree, verdicts, clusters = load_bundle(store, run_id)
             for case in promote_clusters_to_cases(run, tree, clusters, cluster_ids={cluster_id}):
                 store.save_regression_case(case)
@@ -444,6 +675,7 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     ) -> HTMLResponse:
         load_settings()
         with SqliteStore(app.state.db_path) as store:
+            _require_terminal_run(store, run_id)
             run, tree, _verdicts, clusters = load_bundle(store, run_id)
         try:
             node, rule, verdict = resolve_cluster_remediation_target(
@@ -544,11 +776,17 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
 
         with SqliteStore(app.state.db_path) as store:
             store.save_stress_profile(profile)
+            picker_context = _personas_picker_context(agent_spec, store)
 
+        # Renders profile_editor.html (the standalone profile page's own
+        # target) plus an out-of-band personas_picker.html (the New Run
+        # form's Attack Tactics picker, if present in the requesting page's
+        # DOM) -- one route serves both surfaces without duplicating the
+        # generate-and-save logic above.
         return templates.TemplateResponse(
             request,
-            "fragments/profile_editor.html",
-            {"agent_spec_name": agent_spec_name, "profile": profile},
+            "fragments/profile_generate_result.html",
+            {"agent_spec_name": agent_spec_name, "profile": profile, **picker_context},
         )
 
     @app.post("/agent-specs/{agent_spec_name}/profile/save", response_class=HTMLResponse)
@@ -577,6 +815,106 @@ def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
             request,
             "fragments/profile_editor.html",
             {"agent_spec_name": agent_spec_name, "profile": updated},
+        )
+
+    @app.post("/agent-specs/{agent_spec_name}/candidate-rules/apply", response_class=HTMLResponse)
+    def post_apply_candidate_rule(
+        request: Request,
+        agent_spec_name: str,
+        rule_id: str = Form(...),
+        rule_text: str = Form(...),
+        rule_severity: str = Form(...),
+    ) -> HTMLResponse:
+        """Promotes one candidate rule (from this agent's stress profile)
+        into a real, enforced rule on the agent spec's own YAML -- the
+        missing half of Phase RE-profile's review flow: generating and
+        editing candidates never wrote anything into the spec itself (see
+        ``config_writer.apply_candidate_rule``'s docstring); this is the
+        button that actually does. Applies whatever text/severity is
+        currently in the rule's own fields (via ``hx-include``), not
+        necessarily whatever was last saved."""
+        if not rule_id.strip():
+            raise HTTPException(status_code=400, detail="Give this rule an id before applying it.")
+        try:
+            agent_spec_path = _find_agent_spec_path_by_name(agent_spec_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        try:
+            rule = Rule(id=rule_id, text=rule_text, severity=rule_severity)
+            apply_candidate_rule(agent_spec_path, rule)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        remaining_count = None
+        with SqliteStore(app.state.db_path) as store:
+            profile = store.get_stress_profile(agent_spec_name)
+            if profile is not None:
+                updated = remove_candidate_rule(profile, rule_id)
+                store.save_stress_profile(updated)
+                remaining_count = len(updated.candidate_rules)
+
+        return templates.TemplateResponse(
+            request,
+            "fragments/candidate_rule_applied.html",
+            {"rule": rule, "remaining_count": remaining_count},
+        )
+
+    @app.post(
+        "/agent-specs/{agent_spec_name}/candidate-rules/apply-all", response_class=HTMLResponse
+    )
+    async def post_apply_all_candidate_rules(
+        request: Request, agent_spec_name: str
+    ) -> HTMLResponse:
+        """Bulk sibling of ``post_apply_candidate_rule`` above: writes every
+        candidate rule currently in the section's own fields (via
+        ``hx-include``, saved or not) into the spec's real YAML in one pass.
+
+        A collision (this exact id already on the spec -- e.g. an earlier
+        session already applied a rule with identical text; see
+        ``reasoning/profiler.py``'s ``_rule_id``, which hashes on text so a
+        genuinely new rule can't collide) is skipped and reported rather than
+        aborting the whole batch, so one bad row never blocks the rest."""
+        form = await request.form()
+        rule_ids = form.getlist("rule_id")
+        rule_texts = form.getlist("rule_text")
+        rule_severities = form.getlist("rule_severity")
+
+        try:
+            agent_spec_path = _find_agent_spec_path_by_name(agent_spec_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        applied: list[Rule] = []
+        skipped: list[tuple[str, str]] = []
+        for rule_id, rule_text, rule_severity in zip(rule_ids, rule_texts, rule_severities):
+            if not rule_id.strip():
+                continue  # a brand-new, never-saved "+Add Rule" row has no id yet
+            rule = Rule(id=rule_id, text=rule_text, severity=rule_severity)
+            try:
+                apply_candidate_rule(agent_spec_path, rule)
+                applied.append(rule)
+            except ValueError as exc:
+                skipped.append((rule_id, str(exc)))
+
+        remaining_rules: list[Rule] = []
+        with SqliteStore(app.state.db_path) as store:
+            profile = store.get_stress_profile(agent_spec_name)
+            if profile is not None:
+                for rule in applied:
+                    profile = remove_candidate_rule(profile, rule.id)
+                if applied:
+                    store.save_stress_profile(profile)
+                remaining_rules = profile.candidate_rules
+
+        return templates.TemplateResponse(
+            request,
+            "fragments/rules_section.html",
+            {
+                "agent_spec_name": agent_spec_name,
+                "rules": remaining_rules,
+                "bulk_result": {"applied": applied, "skipped": skipped},
+            },
         )
 
     @app.get("/agent-specs/{agent_spec_name}/regression", response_class=HTMLResponse)

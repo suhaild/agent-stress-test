@@ -153,6 +153,17 @@ def test_agent_spec_valid():
     assert spec.rules[0].severity == "major"
 
 
+def test_agent_spec_display_name_defaults_blank():
+    spec = make_agent_spec()
+    assert spec.display_name == ""
+
+
+def test_agent_spec_accepts_a_display_name():
+    spec = make_agent_spec(display_name="Aria - Northwind Outfitters Support")
+    assert spec.display_name == "Aria - Northwind Outfitters Support"
+    assert spec.name == "test_agent"  # the stable id is unaffected
+
+
 def test_rule_defaults_severity_to_major():
     rule = Rule(id="r1", text="Be nice.")
     assert rule.severity == "major"
@@ -253,6 +264,34 @@ def test_verdict_valid():
     assert verdict.tier == "rules"
     assert verdict.confidence == 1.0
     assert verdict.severity == "critical"
+    # Defaults True so every pre-existing verdict (including already-
+    # persisted rows with no "applicable" key at all) stays valid unchanged.
+    assert verdict.applicable is True
+
+
+def test_verdict_reloads_a_pre_applicable_persisted_row_unchanged():
+    """A verdict persisted before the ``applicable`` field existed has no
+    such key in its stored JSON at all -- must still reload cleanly."""
+    import json
+
+    pre_existing_json = json.dumps(
+        {
+            "id": "v1",
+            "run_id": "run-1",
+            "node_id": "node-1",
+            "passed": True,
+            "rule_id": "no-refunds",
+            "reason": "fine",
+            "tier": "rules",
+            "confidence": 1.0,
+            "severity": "minor",
+            "scope": "rule",
+        }
+    )
+
+    reloaded = Verdict.model_validate_json(pre_existing_json)
+
+    assert reloaded.applicable is True
 
 
 def test_cluster_valid():

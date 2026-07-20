@@ -1,0 +1,82 @@
+{% if summary %}
+<section class="mb-10">
+  <h2 class="tag-label mb-4">Executive Summary</h2>
+
+  <div class="panel p-6 mb-5">
+    <p class="text-base sm:text-lg text-[var(--ink)] leading-relaxed">{{ summary.text }}</p>
+    <div id="llm-summary-slot" class="mt-3"></div>
+    {% if run_id %}
+    <button type="button" hx-post="/runs/{{ run_id }}/summary/llm"
+            hx-vals='{"provider": "{{ run_provider }}"}'
+            hx-target="#llm-summary-slot" hx-swap="innerHTML"
+            class="btn-ghost text-xs mt-4">
+      Generate AI Summary
+    </button>
+    {% endif %}
+  </div>
+
+  <div class="grid gap-5 sm:grid-cols-2 mb-5">
+    <div class="panel p-5">
+      <p class="field-label mb-2">Top Offending Rule</p>
+      {% if summary.top_rule %}
+      <p class="font-mono text-sm text-[var(--ink)]">{{ summary.top_rule.rule_id }}</p>
+      <p class="text-xs text-[var(--ink-faint)] mt-1">
+        {{ summary.top_rule.failure_count }} failure{{ 's' if summary.top_rule.failure_count != 1 else '' }}
+        &middot; worst: <span style="color: {% if summary.top_rule.worst_severity == 'critical' %}var(--fail){% elif summary.top_rule.worst_severity == 'major' %}var(--warn){% else %}var(--pass){% endif %};">{{ summary.top_rule.worst_severity }}</span>
+      </p>
+      {% else %}
+      <p class="text-sm" style="color: var(--pass);">No rule failures this run.</p>
+      {% endif %}
+    </div>
+    <div class="panel p-5">
+      <p class="field-label mb-2">Top Offending Tactic</p>
+      {% if summary.top_persona %}
+      <p class="font-mono text-sm text-[var(--ink)]">{{ summary.top_persona.tactic }}</p>
+      <p class="text-xs text-[var(--ink-faint)] mt-1">
+        {{ summary.top_persona.failure_count }} failing node{{ 's' if summary.top_persona.failure_count != 1 else '' }}
+      </p>
+      {% else %}
+      <p class="text-sm" style="color: var(--pass);">No tactic stands out — no failures this run.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel overflow-hidden">
+    <p class="field-label px-4 pt-4 pb-1">Fix This First</p>
+    {% if fix_first %}
+    <table class="w-full text-sm mt-2">
+      <thead>
+        <tr style="background: var(--bg-panel-raised);">
+          <th class="field-label text-left px-4 py-3">#</th>
+          <th class="field-label text-left px-4 py-3">Label</th>
+          <th class="field-label text-center px-4 py-3">Kind</th>
+          <th class="field-label text-center px-4 py-3">Severity</th>
+          <th class="field-label text-right px-4 py-3">Size</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in fix_first %}
+        <tr{% if not loop.first %} style="border-top: 1px solid var(--wire);"{% endif %}>
+          <td class="px-4 py-3 font-mono text-xs text-[var(--ink-faint)]">{{ loop.index }}</td>
+          <td class="px-4 py-3 font-semibold text-[var(--ink)]">{{ item.label }}</td>
+          <td class="px-4 py-3 text-center">
+            <span class="tag {{ 'tag-fail' if item.kind == 'cluster' else 'tag-warn' }}">{{ 'failure' if item.kind == 'cluster' else 'near-miss' }}</span>
+          </td>
+          <td class="px-4 py-3 text-center">
+            {% if item.severity %}
+            <span class="tag {% if item.severity == 'critical' %}tag-fail{% elif item.severity == 'major' %}tag-warn{% else %}tag-pass{% endif %}">{{ item.severity }}</span>
+            {% else %}
+            <span class="text-[var(--ink-faint)]">&mdash;</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-right font-mono text-[var(--ink-dim)]">{{ item.size }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="px-4 pb-4 text-sm" style="color: var(--pass);">Nothing to fix — no failures or near-misses this run.</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}

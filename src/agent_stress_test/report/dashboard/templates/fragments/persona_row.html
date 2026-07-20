@@ -1,20 +1,32 @@
 {%- set name = persona.name if persona is defined and persona else '' -%}
 {%- set scenario = persona.scenario if persona is defined and persona else '' -%}
 {%- set user_description = persona.user_description if persona is defined and persona else '' -%}
-<div class="persona-row panel p-4 space-y-2" style="position: relative;">
-  <button type="button" class="btn-ghost text-xs" style="position: absolute; top: .6rem; right: .6rem;"
-          @click="$el.closest('.persona-row').remove()">Remove</button>
-  <div>
-    <label class="field-label block mb-1">Name</label>
-    <input type="text" name="persona_name" value="{{ name }}" placeholder="e.g. symptom-minimizer"
-           class="field-input font-mono text-xs" style="max-width: 20rem;">
+{%- set is_new = not (persona is defined and persona) -%}
+<details class="profile-card panel" {% if is_new %}open{% endif %}>
+  <summary>
+    <span class="disclosure-chevron">▸</span>
+    <span class="profile-card-title">{{ name or "(unnamed persona)" }}</span>
+    <span class="profile-card-snippet">{{ scenario }}</span>
+  </summary>
+  <div class="profile-card-body">
+    <div class="flex justify-end">
+      <button type="button" class="btn-ghost text-xs" data-dirty
+              @click="pushToast('Persona removed — not permanent until you Save.', 'warn'); $el.closest('.profile-card').remove()">
+        Remove
+      </button>
+    </div>
+    <div>
+      <label class="field-label block mb-1">Name</label>
+      <input type="text" name="persona_name" value="{{ name }}" placeholder="e.g. symptom-minimizer"
+             class="field-input font-mono text-xs" style="max-width: 20rem;">
+    </div>
+    <div>
+      <label class="field-label block mb-1">Scenario</label>
+      <textarea name="persona_scenario" rows="3" class="field-input text-xs">{{ scenario }}</textarea>
+    </div>
+    <div>
+      <label class="field-label block mb-1">User Description</label>
+      <textarea name="persona_user_description" rows="2" class="field-input text-xs">{{ user_description }}</textarea>
+    </div>
   </div>
-  <div>
-    <label class="field-label block mb-1">Scenario</label>
-    <textarea name="persona_scenario" rows="2" class="field-input text-xs">{{ scenario }}</textarea>
-  </div>
-  <div>
-    <label class="field-label block mb-1">User Description</label>
-    <textarea name="persona_user_description" rows="2" class="field-input text-xs">{{ user_description }}</textarea>
-  </div>
-</div>
+</details>

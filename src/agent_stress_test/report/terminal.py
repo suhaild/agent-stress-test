@@ -21,13 +21,19 @@ from rich.table import Table
 from rich.text import Text
 
 from agent_stress_test.models import Cluster, Node, Run, Verdict
+from agent_stress_test.orchestration.executive_summary import FixFirstItem, RunSummary
 from agent_stress_test.orchestration.reliability import (
     NearMiss,
     ReliabilityReport,
     near_miss_ranking,
 )
+from agent_stress_test.orchestration.rule_coverage import RuleCoverage, rule_coverage
 from agent_stress_test.orchestration.tree import ConversationTree
-from agent_stress_test.report.shared import conversation_verdicts_by_leaf, ranked_clusters
+from agent_stress_test.report.shared import (
+    conversation_verdicts_by_leaf,
+    executive_summary_context,
+    ranked_clusters,
+)
 
 _SEVERITY_STYLE = {"critical": "bold red", "major": "yellow", "minor": "cyan"}
 _ROLE_STYLE = {"system": "dim italic", "user": "bold magenta", "assistant": "bold white"}
@@ -256,6 +262,64 @@ def render_conversation_verdicts(
         console.print(table)
 
 
+_COVERAGE_STYLE = {
+    "failed": "bold red",
+    "near_miss": "yellow",
+    "passed": "green",
+    "never_exercised": "dim",
+}
+
+
+def render_summary(console: Console, summary: RunSummary, fix_first: list[FixFirstItem]) -> None:
+    """Phase RE4: the executive summary panel (Phase RE2), brought to the
+    terminal report so the two surfaces don't drift — built from the exact
+    same ``executive_summary_context`` the dashboard calls (see
+    ``render_full_report`` below), never a re-derivation of its own."""
+    console.print(Panel(summary.text, title="Executive Summary", border_style="cyan"))
+    if not fix_first:
+        return
+    table = Table(title="Fix This First", show_lines=False)
+    table.add_column("#", justify="right")
+    table.add_column("Label", style="bold")
+    table.add_column("Kind", justify="center")
+    table.add_column("Severity", justify="center")
+    table.add_column("Size", justify="right")
+    for index, item in enumerate(fix_first, start=1):
+        severity_cell = (
+            Text(item.severity, style=_SEVERITY_STYLE[item.severity])
+            if item.severity
+            else Text("-", style="dim")
+        )
+        table.add_row(
+            str(index),
+            item.label,
+            "failure" if item.kind == "cluster" else "near-miss",
+            severity_cell,
+            str(item.size),
+        )
+    console.print(table)
+
+
+def render_rule_coverage(console: Console, coverage: list[RuleCoverage]) -> None:
+    """Phase RE3/RE4: every declared rule x pass/fail/near-miss/never-exercised
+    — a rule that never fired stays invisible without this, on either surface."""
+    if not coverage:
+        return
+    table = Table(title="Rule Coverage", show_lines=False)
+    table.add_column("Rule", style="bold")
+    table.add_column("Severity", justify="center")
+    table.add_column("Status", justify="center")
+    table.add_column("Pass / Fail", justify="right")
+    for row in coverage:
+        table.add_row(
+            row.rule_id,
+            Text(row.severity, style=_SEVERITY_STYLE[row.severity]),
+            Text(row.status.replace("_", " "), style=_COVERAGE_STYLE[row.status]),
+            f"{row.pass_count} / {row.fail_count}",
+        )
+    console.print(table)
+
+
 def render_full_report(
     console: Console,
     *,
@@ -265,12 +329,23 @@ def render_full_report(
     tree: ConversationTree,
     verdicts: list[Verdict],
 ) -> None:
-    """The complete report: reliability, ranked clusters, conversation-level
-    verdicts, near misses, then one transcript per cluster."""
+    """The complete report: reliability, executive summary, ranked clusters,
+    rule coverage, conversation-level verdicts, near misses, then one
+    transcript per cluster.
+
+    The executive summary and fix-this-first ranking are built via
+    ``executive_summary_context`` — the exact same helper
+    ``report/dashboard/server.py``/``live_events.py`` call — so the CLI and
+    the dashboard can never independently drift on those numbers (Phase RE4).
+    """
+    near_misses = near_miss_ranking(tree.nodes(), verdicts)
+    exec_ctx = executive_summary_context(tree.nodes(), verdicts, clusters, reliability, near_misses)
     render_reliability(console, run, reliability)
+    render_summary(console, exec_ctx["summary"], exec_ctx["fix_first"])
     render_clusters(console, clusters, verdicts)
+    render_rule_coverage(console, rule_coverage(run.agent_spec.rules, verdicts))
     render_conversation_verdicts(console, tree, verdicts)
-    render_near_misses(console, near_miss_ranking(tree.nodes(), verdicts))
+    render_near_misses(console, near_misses)
     for cluster in clusters:
         if cluster.representative_node_id:
             render_transcript(console, tree, cluster.representative_node_id, verdicts)
@@ -278,7 +353,9 @@ def render_full_report(
 
 __all__ = [
     "render_reliability",
+    "render_summary",
     "render_clusters",
+    "render_rule_coverage",
     "render_transcript",
     "render_conversation_verdicts",
     "render_near_misses",

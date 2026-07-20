@@ -21,6 +21,7 @@ from agent_stress_test.targets.provider_agent import _STUB_TOOL_RESULT, Provider
 from agent_stress_test.targets.prompt_rendering import _render_system_prompt
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.sample_agent import SampleAgent
+from agent_stress_test.targets.sample_agent_advanced import AdvancedSampleAgent
 from agent_stress_test.targets.subprocess_agent import SubprocessAgent
 from agent_stress_test.targets.tool_calling_verification_agent import (
     tool_calling_verification_agent,
@@ -342,6 +343,7 @@ def test_agent_spec_with_no_target_block_defaults_to_none():
         {"kind": "python", "import_path": "agent_stress_test.targets.examples:echo_target"},
         {"kind": "subprocess", "command": ["python", "run.py"]},
         {"kind": "provider", "model": "anthropic/claude-haiku-4-5-20251001"},
+        {"kind": "sample_advanced"},
     ],
 )
 def test_agent_spec_validates_each_target_kind(target):
@@ -432,6 +434,25 @@ def test_build_target_from_spec_provider_kind(monkeypatch):
     assert isinstance(target, ProviderAgent)
     result = target.respond([Message(role="user", content="hi")])
     assert result.final_reply == "final reply"
+
+
+def test_build_target_from_spec_sample_advanced_kind_executes_a_real_tool():
+    spec = make_agent_spec(target={"kind": "sample_advanced"})
+    llm = FakeLLMProvider(
+        responses=[
+            'Thought: look it up.\nAction: lookup_order\nAction Input: {"order_id": "NW-1001"}',
+            "Thought: done.\nFinal Answer: Your tracking number is 1Z999AA10123456789.",
+        ]
+    )
+
+    target = _build_target_from_spec(spec, llm)
+
+    assert isinstance(target, AdvancedSampleAgent)
+    assert target.capabilities() == Capabilities(tools=True)
+    result = target.respond([Message(role="user", content="Where is order NW-1001?")])
+    assert result.final_reply == "Your tracking number is 1Z999AA10123456789."
+    assert result.tool_calls[0].name == "lookup_order"
+    assert "1Z999AA10123456789" in result.tool_calls[0].output
 
 
 def test_build_target_from_spec_unknown_kind_raises_clean_error():

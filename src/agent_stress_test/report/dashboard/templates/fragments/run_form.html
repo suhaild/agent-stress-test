@@ -1,90 +1,283 @@
-{% macro model_picker(field_name, options, default_value, default_label) %}
-<div x-data="dropdown({ value: '{{ default_value }}', label: '{{ default_label }}' })" @click.outside="open = false" class="relative">
-  <button type="button" @click="open = !open" class="field-input flex items-center justify-between text-left w-full">
-    <span x-text="label" class="truncate"></span>
-    <span class="text-[var(--ink-faint)] ml-2 transition-transform duration-150" :class="{ 'rotate-180': open }">▾</span>
-  </button>
-  <input type="hidden" name="{{ field_name }}" :value="value">
-  <div x-show="open" x-collapse x-cloak class="tactic-panel">
-    {% for opt in options %}
-    <label class="tactic-row" @click="value = '{{ opt.id }}'; label = '{{ opt.label }}'; open = false">
-      <input type="radio" :checked="value === '{{ opt.id }}'" class="mt-0.5 accent-[var(--accent)]">
-      <span class="min-w-0">
-        <span class="field-label block">{{ opt.label }}</span>
-        {% if opt.id %}<span class="field-help block mt-0.5 font-mono">{{ opt.id }}</span>{% endif %}
-      </span>
-    </label>
-    {% endfor %}
-    <label class="tactic-row" style="cursor: auto;">
-      <span class="min-w-0 w-full">
-        <span class="field-label block mb-1">Custom model id</span>
-        <input type="text" placeholder="provider/model-name" class="field-input font-mono text-xs"
-               @click.stop @input="value = $event.target.value; label = $event.target.value || 'Custom model id'">
-      </span>
-    </label>
-  </div>
-</div>
-{% endmacro %}
-<form hx-post="/runs" hx-swap="none" class="panel p-6 space-y-5">
-  <div>
-    <label class="field-label block mb-1">Target Agent</label>
-    <p class="field-help mb-1.5">Which agent's rules and persona the judge checks replies against.</p>
-    <select name="agent_spec_id" class="field-input"
-            hx-get="/agent-specs/personas" hx-trigger="change"
-            hx-target="#tactics-picker" hx-swap="outerHTML">
-      {% for spec in agent_specs %}
-      <option value="{{ spec.id }}">{{ spec.name }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div x-data="{ showTargetOverride: false }">
-    <button type="button" @click="showTargetOverride = !showTargetOverride" class="field-label mb-1 flex items-center gap-1" style="cursor: pointer;">
-      <span class="text-[var(--ink-faint)] transition-transform duration-150" :class="{ 'rotate-90': showTargetOverride }">▸</span>
-      Advanced: Override Target Endpoint
-    </button>
-    <div x-show="showTargetOverride" x-collapse x-cloak class="mt-1.5">
-      <p class="field-help mb-1.5">Point this run at an ad hoc HTTP endpoint instead — ignores whatever this agent spec's own <code>target:</code> block declares. Leave blank to use the spec's declared target (the bundled demo agent, if it declares none).</p>
-      <input type="text" name="target_url" placeholder="e.g. http://localhost:5000/chat" class="field-input font-mono">
+{% from "macros.html" import model_picker %}
+{% set default_agent = agent_specs[0] if agent_specs else None %}
+{% set default_tactics_count = tactics | length %}
+{% set default_target_calls = 6 * default_tactics_count %}
+<form hx-post="/runs" hx-swap="none" hx-disabled-elt="#run-submit-btn" id="run-form" class="space-y-5">
+
+  <div class="panel p-5">
+    <label class="field-label block mb-1">Quick Start</label>
+    <p class="field-help mb-2.5">Pick a starting point — every field below stays editable after.</p>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+      <button type="button" class="preset-btn" data-preset="smoke" onclick="applyRunPreset('smoke')">
+        <span class="preset-title">Quick Smoke Test</span>
+        <span class="preset-sub">3 turns · 2 tactics · fastest</span>
+      </button>
+      <button type="button" class="preset-btn is-active" data-preset="standard" onclick="applyRunPreset('standard')">
+        <span class="preset-title">Standard</span>
+        <span class="preset-sub">6 turns · all tactics</span>
+      </button>
+      <button type="button" class="preset-btn" data-preset="thorough" onclick="applyRunPreset('thorough')">
+        <span class="preset-title">Thorough Audit</span>
+        <span class="preset-sub">12 turns · 3 samples · all tactics</span>
+      </button>
     </div>
   </div>
-  <div>
-    <label class="field-label block mb-1">Target Agent's Model</label>
-    <p class="field-help mb-1.5">LLM behind the bundled agent (ignored if the spec declares its own target, or if overridden above) and the consistency scorer.</p>
-    {{ model_picker('provider', models, 'fake', models[0].label) }}
-  </div>
-  <div>
-    <label class="field-label block mb-1">Adversary's Model</label>
-    <p class="field-help mb-1.5">LLM behind the attacker — blank uses a cheap real model by default.</p>
-    {{ model_picker('sim_provider', [{'id': '', 'label': 'Default — cheap model'}] + models, '', 'Default — cheap model') }}
-  </div>
-  <div class="grid grid-cols-2 gap-x-4 gap-y-1">
-    <label class="field-label">Max Conversation Turns</label>
-    <label class="field-label">Consistency Samples</label>
-    <p class="field-help mb-1.5">How many adversarial turns to attempt.</p>
-    <p class="field-help mb-1.5">Re-ask each turn N× to catch flakiness.</p>
-    <input type="number" name="budget" value="6" min="1" class="field-input">
-    <input type="number" name="sample_n" value="1" min="1" class="field-input">
-  </div>
-  <div x-data="multiSelect()" @click.outside="open = false" class="relative">
-    <label class="field-label block mb-1">Attack Tactics</label>
-    <p class="field-help mb-1.5">Choose which tactics to run — none selected tries them all.</p>
-    <button type="button" @click="open = !open" class="field-input flex items-center justify-between text-left w-full">
-      <span x-text="selected.length ? selected.length + ' selected' : 'All tactics'" class="truncate"></span>
-      <span class="text-[var(--ink-faint)] ml-2 transition-transform duration-150" :class="{ 'rotate-180': open }">▾</span>
-    </button>
-    <input type="hidden" name="tactics" :value="selected.join(',')">
-    <div x-show="open" x-collapse x-cloak class="tactic-panel">
-      {% for tactic in tactics %}
-      <label class="tactic-row">
-        <input type="checkbox" value="{{ tactic.id }}" class="mt-0.5 accent-[var(--accent)]"
-               @change="$event.target.checked ? selected.push('{{ tactic.id }}') : selected = selected.filter(t => t !== '{{ tactic.id }}')">
-        <span class="min-w-0">
-          <span class="field-label block">{{ tactic.id.replace('-', ' ') | title }}</span>
-          <span class="field-help block mt-0.5">{{ tactic.description }}</span>
+
+  <div class="panel" x-data="{ open: null }">
+
+    <div class="accordion-section">
+      <button type="button" class="accordion-header" @click="open = open === 1 ? null : 1">
+        <span class="accordion-title">
+          <span class="field-label">1 · Target Agent</span>
         </span>
-      </label>
-      {% endfor %}
+        <span class="flex items-center gap-3 min-w-0 flex-1">
+          <span class="accordion-summary" data-live="agent-summary">
+            {{ default_agent.name if default_agent else "No agent configured" }}{% if default_agent %} · {{ default_agent.tools_count }} tools · {{ default_agent.rules_count }} rules{% endif %}
+          </span>
+          <span class="accordion-chevron" :class="{ 'rotate-90': open === 1 }">▸</span>
+        </span>
+      </button>
+      <div x-show="open === 1" x-collapse x-cloak class="accordion-body">
+        <p class="field-help mb-1.5">Which agent's rules and persona the judge checks replies against.</p>
+        <select name="agent_spec_id" id="agent_spec_id" class="field-input"
+                hx-get="/agent-specs/personas" hx-trigger="change"
+                hx-target="#tactics-picker" hx-swap="outerHTML"
+                onchange="updateRunEstimate()">
+          {% for spec in agent_specs %}
+          <option value="{{ spec.id }}">{{ spec.name }}</option>
+          {% endfor %}
+        </select>
+        <div class="flex flex-wrap items-start gap-x-6 gap-y-2.5 mt-3">
+          <div class="agent-fact">
+            <span class="field-label block has-tip" title="What this agent's spec says it CAN call — not proof those tools work. Hover the number for the actual list.">Tools Declared</span>
+            <span class="agent-fact-value has-tip" data-agent-field="tools_count"
+                  title="{{ default_agent.tool_names | join(', ') if default_agent and default_agent.tool_names else 'No tools declared' }}">{{ default_agent.tools_count if default_agent else 0 }}</span>
+          </div>
+          <div class="agent-fact">
+            <span class="field-label block has-tip" title="Behavioral rules this agent must obey — checked by the deterministic tier-1 judge where possible, and by the tier-2 LLM judge for the rest.">Rules Declared</span>
+            <span class="agent-fact-value" data-agent-field="rules_count">{{ default_agent.rules_count if default_agent else 0 }}</span>
+          </div>
+          <div class="agent-fact">
+            <span class="field-label block has-tip" title="How this agent's replies are actually produced (bundled demo, HTTP endpoint, Python function, etc). Hover the value for this specific agent's mechanism.">Target Kind</span>
+            <span class="agent-fact-value has-tip" data-agent-field="target_kind_label"
+                  title="{{ default_agent.target_kind_detail if default_agent else '' }}">{{ default_agent.target_kind_label if default_agent else "" }}</span>
+          </div>
+        </div>
+        <p class="field-help mt-2" data-agent-field="domain">{{ ("Domain: " + default_agent.domain) if (default_agent and default_agent.domain) else "No domain set." }}</p>
+
+        <div x-data="{ showTargetOverride: false }" class="mt-3.5">
+          <button type="button" @click="showTargetOverride = !showTargetOverride" class="field-label mb-1 flex items-center gap-1" style="cursor: pointer;">
+            <span class="text-[var(--ink-faint)] transition-transform duration-150" :class="{ 'rotate-90': showTargetOverride }">▸</span>
+            Advanced: Override Target Endpoint
+          </button>
+          <div x-show="showTargetOverride" x-collapse x-cloak class="mt-1.5">
+            <p class="field-help mb-1.5">Point this run at an ad hoc HTTP endpoint instead — ignores whatever this agent spec's own <code>target:</code> block declares. Leave blank to use the spec's declared target (the bundled demo agent, if it declares none).</p>
+            <input type="text" name="target_url" placeholder="e.g. http://localhost:5000/chat" class="field-input font-mono">
+          </div>
+        </div>
+      </div>
     </div>
+
+    <div class="accordion-section">
+      <button type="button" class="accordion-header" @click="open = open === 2 ? null : 2">
+        <span class="accordion-title">
+          <span class="field-label">2 · Models</span>
+        </span>
+        <span class="flex items-center gap-3 min-w-0 flex-1">
+          <span class="accordion-summary" data-live="models-summary">Target: {{ models[0].label }} · Adversary: Default — cheap model</span>
+          <span class="accordion-chevron" :class="{ 'rotate-90': open === 2 }">▸</span>
+        </span>
+      </button>
+      <div x-show="open === 2" x-collapse x-cloak class="accordion-body space-y-4">
+        <div>
+          <label class="field-label block mb-1">Target Agent's Model</label>
+          <p class="field-help mb-1.5">LLM behind the target agent and the consistency scorer — used directly by the bundled agent (no <code>target:</code>, or <code>target: {kind: sample_advanced}</code>); ignored for http/python/subprocess/provider targets, which run independently (or via their own declared model), and if overridden above.</p>
+          {{ model_picker('provider', models, 'fake', models[0].label) }}
+        </div>
+        <div>
+          <label class="field-label block mb-1">Adversary's Model</label>
+          <p class="field-help mb-1.5">LLM behind the attacker — blank uses a cheap real model by default.</p>
+          {{ model_picker('sim_provider', [{'id': '', 'label': 'Default — cheap model'}] + models, '', 'Default — cheap model') }}
+        </div>
+      </div>
+    </div>
+
+    <div class="accordion-section">
+      <button type="button" class="accordion-header" @click="open = open === 3 ? null : 3">
+        <span class="accordion-title">
+          <span class="field-label">3 · Attack Configuration</span>
+        </span>
+        <span class="flex items-center gap-3 min-w-0 flex-1">
+          <span class="accordion-summary" data-live="attack-summary">6 turns × 1 sample · all {{ default_tactics_count }} tactics</span>
+          <span class="accordion-chevron" :class="{ 'rotate-90': open === 3 }">▸</span>
+        </span>
+      </button>
+      <div x-show="open === 3" x-collapse x-cloak class="accordion-body space-y-4">
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1">
+          <label class="field-label has-tip" title="Each tactic/persona runs its own independent conversation, up to this many adversarial turns — not a total shared across the whole run.">Max Conversation Turns</label>
+          <label class="field-label has-tip" title="1 (the default) turns consistency scoring off entirely — the target is only resampled and scored for instability once this is 2 or higher.">Consistency Samples</label>
+          <p class="field-help mb-1.5">How many adversarial turns to attempt.</p>
+          <p class="field-help mb-1.5">Re-ask each turn N× to catch flakiness.</p>
+          <input type="number" name="budget" value="6" min="1" class="field-input" oninput="updateRunEstimate()">
+          <input type="number" name="sample_n" value="1" min="1" class="field-input" oninput="updateRunEstimate()">
+        </div>
+        {% include "fragments/personas_picker.html" %}
+      </div>
+    </div>
+
   </div>
-  <button type="submit" class="btn-stamp w-full">Start Stress Test →</button>
+
+  <div class="panel p-5">
+    <div class="flex items-baseline justify-between mb-2">
+      <label class="field-label">Run Summary</label>
+      <span class="field-help">Updates live as you edit above</span>
+    </div>
+    <div class="estimate-row"><span class="k">Target agent</span><span class="v" data-live="agent-summary">{{ default_agent.name if default_agent else "No agent configured" }}{% if default_agent %} · {{ default_agent.tools_count }} tools · {{ default_agent.rules_count }} rules{% endif %}</span></div>
+    <div class="estimate-row"><span class="k">Models</span><span class="v" data-live="models-summary">Target: {{ models[0].label }} · Adversary: Default — cheap model</span></div>
+    <div class="estimate-row"><span class="k">Attack config</span><span class="v" data-live="attack-summary">6 turns × 1 sample · all {{ default_tactics_count }} tactics</span></div>
+    <div class="estimate-row"><span class="k has-tip" title="tactics × turns × (1 + consistency samples, if 2 or more) — calls to the target agent itself. Doesn't include judge calls, which vary.">Est. target calls</span><span class="v" id="estimate-target-calls">≈ {{ default_target_calls }}</span></div>
+    <div class="estimate-row"><span class="k has-tip" title="tactics × turns — one call to generate each adversarial probe.">Est. adversary calls</span><span class="v" id="estimate-adversary-calls">≈ {{ default_target_calls }}</span></div>
+    <div class="estimate-row"><span class="k has-tip" title="A qualitative hint from the selected model's own label (cheap/balanced/most capable) — not a computed dollar figure. Actual spend is tracked per-run once it finishes.">Relative cost</span><span class="v" id="estimate-cost-hint">Free (offline test double)</span></div>
+    <p class="field-help mt-2">Judge calls vary — the tier-2 LLM judge only runs when the deterministic tier-1 rules find nothing.</p>
+    <p id="fake-provider-warning" class="field-help mt-2" style="color: var(--warn);">
+      <strong>!</strong> Offline test double selected — free, but some verdict reasons will read as
+      generic placeholder text rather than real judgments. Switch Target Model to a real provider
+      before a live demo.
+    </p>
+    <button type="submit" id="run-submit-btn" class="btn-stamp w-full mt-3.5">Start Stress Test →</button>
+  </div>
 </form>
+<script>
+  window.AGENT_SPECS_META = {{ agent_specs | tojson }};
+  window.MODEL_META = {{ models | tojson }};
+
+  var RUN_PRESETS = {
+    smoke: { budget: 3, sampleN: 1, tacticsMode: 'limited', limit: 2 },
+    standard: { budget: 6, sampleN: 1, tacticsMode: 'all' },
+    thorough: { budget: 12, sampleN: 3, tacticsMode: 'all' },
+  };
+
+  function applyRunPreset(name) {
+    var preset = RUN_PRESETS[name];
+    var form = document.getElementById('run-form');
+    if (!preset || !form) return;
+
+    form.querySelector('[name=budget]').value = preset.budget;
+    form.querySelector('[name=sample_n]').value = preset.sampleN;
+
+    var tacticsPicker = document.getElementById('tactics-picker');
+    if (tacticsPicker && window.Alpine) {
+      var data = Alpine.$data(tacticsPicker);
+      if (preset.tacticsMode === 'all') {
+        data.selected = [];
+      } else {
+        var ids = Array.prototype.map.call(
+          tacticsPicker.querySelectorAll('.tactic-row input[type=checkbox]'),
+          function (cb) { return cb.value; }
+        );
+        data.selected = ids.slice(0, preset.limit || ids.length);
+      }
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('.preset-btn'), function (btn) {
+      btn.classList.toggle('is-active', btn.dataset.preset === name);
+    });
+    updateRunEstimate();
+  }
+
+  function _setText(form, selector, value) {
+    Array.prototype.forEach.call(form.querySelectorAll(selector), function (el) {
+      el.textContent = value;
+    });
+  }
+
+  function _setTitle(form, selector, value) {
+    Array.prototype.forEach.call(form.querySelectorAll(selector), function (el) {
+      el.title = value;
+    });
+  }
+
+  function _alpineLabel(hiddenInput, fallback) {
+    if (!hiddenInput) return fallback;
+    var scope = hiddenInput.closest('[x-data]');
+    try {
+      if (scope && window.Alpine) return Alpine.$data(scope).label;
+    } catch (e) { /* Alpine not ready yet */ }
+    return fallback;
+  }
+
+  function _costHint(modelId, modelLabel) {
+    if (!modelId || modelId === 'fake') return 'Free (offline test double)';
+    if (/cheap/i.test(modelLabel || '')) return '$ · low';
+    if (/balanced/i.test(modelLabel || '')) return '$$ · moderate';
+    if (/most capable/i.test(modelLabel || '')) return '$$$ · higher';
+    return 'Varies (custom model id)';
+  }
+
+  function updateRunEstimate() {
+    var form = document.getElementById('run-form');
+    if (!form) return;
+
+    var agentSelect = form.querySelector('[name=agent_spec_id]');
+    var agentMeta = (window.AGENT_SPECS_META || []).find(function (a) {
+      return a.id === (agentSelect && agentSelect.value);
+    }) || {};
+
+    var providerInput = form.querySelector('[name=provider]');
+    var simProviderInput = form.querySelector('[name=sim_provider]');
+    var budget = parseInt(form.querySelector('[name=budget]').value, 10) || 0;
+    var sampleN = parseInt(form.querySelector('[name=sample_n]').value, 10) || 1;
+
+    var tacticsPicker = document.getElementById('tactics-picker');
+    var tacticsInput = form.querySelector('[name=tactics]');
+    var totalTactics = tacticsPicker ? tacticsPicker.querySelectorAll('.tactic-row').length : 0;
+    var selectedRaw = tacticsInput ? tacticsInput.value : '';
+    var selectedCount = selectedRaw ? selectedRaw.split(',').filter(Boolean).length : 0;
+    var effectiveTactics = selectedCount || totalTactics;
+
+    var targetCallsPerTurn = 1 + (sampleN >= 2 ? sampleN : 0);
+    var targetCalls = effectiveTactics * budget * targetCallsPerTurn;
+    var adversaryCalls = effectiveTactics * budget;
+
+    _setText(form, '[data-agent-field=tools_count]', agentMeta.tools_count != null ? agentMeta.tools_count : 0);
+    _setTitle(form, '[data-agent-field=tools_count]',
+      (agentMeta.tool_names && agentMeta.tool_names.length) ? agentMeta.tool_names.join(', ') : 'No tools declared');
+    _setText(form, '[data-agent-field=rules_count]', agentMeta.rules_count != null ? agentMeta.rules_count : 0);
+    _setText(form, '[data-agent-field=target_kind_label]', agentMeta.target_kind_label || '');
+    _setTitle(form, '[data-agent-field=target_kind_label]', agentMeta.target_kind_detail || '');
+    _setText(form, '[data-agent-field=domain]', agentMeta.domain ? ('Domain: ' + agentMeta.domain) : 'No domain set.');
+    _setText(form, '[data-live=agent-summary]',
+      (agentMeta.name || '—') + (agentMeta.id ? ' · ' + (agentMeta.tools_count || 0) + ' tools · ' + (agentMeta.rules_count || 0) + ' rules' : ''));
+
+    var providerLabel = _alpineLabel(providerInput, providerInput ? providerInput.value : 'fake');
+    var simLabel = _alpineLabel(simProviderInput, 'Default — cheap model') || 'Default — cheap model';
+    _setText(form, '[data-live=models-summary]', 'Target: ' + providerLabel + ' · Adversary: ' + simLabel);
+
+    _setText(form, '[data-live=attack-summary]',
+      budget + ' turns × ' + sampleN + ' sample' + (sampleN === 1 ? '' : 's') + ' · ' +
+      (selectedCount ? selectedCount + ' of ' + totalTactics + ' tactics' : 'all ' + totalTactics + ' tactics'));
+
+    var targetEl = document.getElementById('estimate-target-calls');
+    if (targetEl) targetEl.textContent = '≈ ' + targetCalls;
+    var adversaryEl = document.getElementById('estimate-adversary-calls');
+    if (adversaryEl) adversaryEl.textContent = '≈ ' + adversaryCalls;
+    var costEl = document.getElementById('estimate-cost-hint');
+    if (costEl) costEl.textContent = _costHint(providerInput ? providerInput.value : '', providerLabel);
+
+    var fakeWarning = document.getElementById('fake-provider-warning');
+    if (fakeWarning) {
+      var isFake = !providerInput || !providerInput.value || providerInput.value === 'fake';
+      fakeWarning.style.display = isFake ? '' : 'none';
+    }
+  }
+
+  (function () {
+    var form = document.getElementById('run-form');
+    if (!form) return;
+    form.addEventListener('input', updateRunEstimate);
+    form.addEventListener('change', updateRunEstimate);
+    form.addEventListener('click', function () { setTimeout(updateRunEstimate, 0); });
+    document.body.addEventListener('htmx:afterSettle', function () { setTimeout(updateRunEstimate, 0); });
+    setTimeout(updateRunEstimate, 0);
+  })();
+</script>

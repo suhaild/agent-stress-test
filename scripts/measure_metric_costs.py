@@ -45,7 +45,7 @@ from agent_stress_test.targets.tool_calling_verification_agent import (
     tool_calling_verification_agent,
 )
 
-_SPEC_PATH = "config/agents/sample_support.yaml"
+_SPEC_PATH = "config/agents/sample_support_advanced.yaml"
 
 _CONVERSATION = [
     Message(role="user", content="Hi, I ordered a jacket last week and it still hasn't shipped."),

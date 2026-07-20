@@ -12,7 +12,7 @@
 {% endmacro %}
 {% if reliability and reliability.applicable %}
 {% set pct = reliability.score * 100 %}
-{% set pct_rounded = pct | round(0, 'floor') | int %}
+{% set pct_rounded = pct | round(0, 'common') | int %}
 {% set dial_color = 'var(--pass)' if reliability.score >= 0.7 else ('var(--warn)' if reliability.score >= 0.4 else 'var(--fail)') %}
 <div class="panel p-6 flex flex-col sm:flex-row items-center gap-6">
   <div class="dial" id="reliability-dial" style="--dial-color: {{ dial_color }}; --pct: 0;">

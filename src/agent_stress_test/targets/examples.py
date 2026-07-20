@@ -1,6 +1,6 @@
 """A minimal example ``kind: python`` target.
 
-Referenced by ``config/agents/example_python_target.yaml`` via
+Referenced by ``config/agents/examples/example_python_target.yaml`` via
 ``target: {kind: python, import_path: agent_stress_test.targets.examples:echo_target}``
 — demonstrates the shape a bring-your-own Python callable takes (see
 ``composition.py``'s ``_load_python_target``): any

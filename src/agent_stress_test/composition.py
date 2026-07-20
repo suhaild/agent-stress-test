@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import importlib
 from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from agent_stress_test.models import (
@@ -25,6 +27,15 @@ from agent_stress_test.models import (
     Run,
     StressProfile,
     Verdict,
+)
+from agent_stress_test.orchestration.cross_run import (
+    RulePassRate,
+    RunDiff,
+    TrendPoint,
+    diff_against_previous,
+    previous_completed_run,
+    reliability_trend,
+    rule_pass_rate_history,
 )
 from agent_stress_test.orchestration.runner import RunResult
 from agent_stress_test.orchestration.tree import ConversationTree
@@ -38,7 +49,9 @@ from agent_stress_test.targets.http_agent import HttpAgent
 from agent_stress_test.targets.provider_agent import ProviderAgent
 from agent_stress_test.targets.python_fn import PythonFunctionAgent
 from agent_stress_test.targets.sample_agent import SampleAgent
+from agent_stress_test.targets.sample_agent_advanced import AdvancedSampleAgent
 from agent_stress_test.targets.subprocess_agent import SubprocessAgent
+from agent_stress_test.targets.tool_backends import build_northwind_tool_backend
 
 # The simulator only has to write one plausible adversarial customer line, not
 # solve the task under test — a cheap, fast model does that job as well as the
@@ -95,6 +108,8 @@ def _build_target_from_spec(agent_spec: AgentSpec, llm: LLMProvider) -> TargetAg
         return SubprocessAgent(target.command, timeout=target.timeout, cwd=target.cwd)
     if target.kind == "provider":
         return ProviderAgent(LiteLLMProvider(model=target.model), agent_spec)
+    if target.kind == "sample_advanced":
+        return AdvancedSampleAgent(agent_spec, llm, build_northwind_tool_backend())
     raise ValueError(f"Unknown target kind: {target.kind!r}")  # pragma: no cover - exhaustive union
 
 
@@ -153,6 +168,43 @@ def load_bundle(
     clusters = store.get_clusters(run_id)
     tree = _rebuild_tree(run_id, nodes, verdicts)
     return run, tree, verdicts, clusters
+
+
+@dataclass(frozen=True)
+class CrossRunBundle:
+    """Everything Phase RE1's cross-run panels need for one run — see
+    ``orchestration/cross_run.py`` for how each piece is actually computed."""
+
+    trend: list[TrendPoint]
+    diff: RunDiff
+    rule_pass_rates: list[RulePassRate]
+
+
+def load_cross_run_bundle(
+    store: Store, run: Run, current_clusters: list[Cluster], current_verdicts: list[Verdict]
+) -> CrossRunBundle:
+    """Fetch this agent's run history from ``store`` and fold it into a
+    ``CrossRunBundle`` — the one place that decides what "historical" means
+    (every other completed run for this ``agent_spec.name``, see
+    ``Store.list_runs_for_agent``) so the dashboard route stays a plain
+    translation of this into template context.
+    """
+    agent_runs = store.list_runs_for_agent(run.agent_spec.name)
+    trend = reliability_trend(agent_runs)
+
+    previous_run = previous_completed_run(run, agent_runs)
+    previous_clusters = store.get_clusters(previous_run.id) if previous_run else []
+    diff = diff_against_previous(run, current_clusters, previous_run, previous_clusters)
+
+    historical_runs = [
+        other for other in agent_runs if other.id != run.id and other.status == "completed"
+    ]
+    historical_verdicts = [
+        verdict for other in historical_runs for verdict in store.get_verdicts(other.id)
+    ]
+    rule_pass_rates = rule_pass_rate_history(current_verdicts, historical_verdicts)
+
+    return CrossRunBundle(trend=trend, diff=diff, rule_pass_rates=rule_pass_rates)
 
 
 def resolve_tactics(tactics_arg: str | None, *, extra_valid: Iterable[str] = ()) -> list[str]:
@@ -256,3 +308,53 @@ def apply_profile_edits(
             ],
         }
     )
+
+
+def remove_candidate_rule(profile: StressProfile, rule_id: str) -> StressProfile:
+    """Drop one candidate rule from a profile, e.g. once it's been written
+    into the agent spec's own ``rules:`` list (see
+    ``config_writer.apply_candidate_rule``) — it's no longer a *candidate*
+    at that point, it's a real rule, so it shouldn't keep showing up here
+    asking for review."""
+    return profile.model_copy(
+        update={
+            "candidate_rules": [r for r in profile.candidate_rules if r.id != rule_id],
+        }
+    )
+
+
+_INTERRUPTED_ERROR = "Interrupted — the process stopped before this run finished."
+
+
+def reconcile_interrupted_runs(store: Store) -> int:
+    """Close out any run still ``pending``/``running`` at process startup.
+
+    Both composition roots execute a run on a thread that can be killed
+    outright -- the dashboard's is a daemon thread (see
+    ``report/dashboard/server.py``'s ``post_run``), and the CLI's own
+    process can just as easily be Ctrl+C'd (``KeyboardInterrupt`` isn't an
+    ``Exception``, so it skips right past the existing "mark this run
+    failed" handling around the run itself). Either way, nothing is left
+    running to ever flip that row out of "running". But a run can only
+    legitimately BE "running" while the process that started it is still
+    alive: neither composition root keeps any in-memory record of a run
+    that could survive its own restart, so the moment a *new* process
+    starts up, any row still claiming to be "running" can only be a
+    leftover from one that no longer exists -- safe to close out here,
+    every time, before that process does anything else with the store.
+    Returns how many rows were fixed, for a caller that wants to log it.
+    """
+    fixed = 0
+    for run in store.list_runs(limit=10_000):
+        if run.status in ("pending", "running"):
+            store.save_run(
+                run.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": _INTERRUPTED_ERROR,
+                        "completed_at": datetime.now(timezone.utc),
+                    }
+                )
+            )
+            fixed += 1
+    return fixed

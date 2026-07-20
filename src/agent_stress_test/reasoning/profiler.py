@@ -16,6 +16,7 @@ handler), not a silently-empty profile that looks like "the agent has no
 gaps."
 """
 
+import hashlib
 import json
 
 from deepeval.dataset import ConversationalGolden
@@ -73,8 +74,18 @@ class _ProfilerOutput(BaseModel):
     candidate_rules: list[_RuleOutput]
 
 
-def _rule_id(agent_spec_name: str, index: int) -> str:
-    return f"{agent_spec_name}-candidate-{index}"
+def _rule_id(agent_spec_name: str, text: str) -> str:
+    """Stable across regenerations: hashed on the rule's own text rather than
+    its position in the LLM's response list. A positional id (candidate-0,
+    candidate-1, ...) would silently collide the moment a *different* rule
+    landed at an index some *earlier* generation had already applied to the
+    real spec -- exactly what happened in practice (a regenerated profile's
+    new candidate-6 collided with a since-applied, unrelated candidate-6 from
+    an earlier profile). Hashing the text means the id only repeats when the
+    text is identical, in which case colliding is correct -- see profile()'s
+    own filter against the spec's existing rule ids."""
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:10]
+    return f"{agent_spec_name}-candidate-{digest}"
 
 
 class AgentProfiler:
@@ -87,6 +98,15 @@ class AgentProfiler:
     def profile(self, agent_spec: AgentSpec) -> StressProfile:
         raw = self._llm.complete(self._prompt(agent_spec))
         output = self._parse(raw)
+        # A rule proposed again with the exact same text as one already
+        # applied to this spec isn't a new candidate -- it's already covered,
+        # so it's dropped rather than shown for review a second time.
+        existing_rule_ids = {r.id for r in agent_spec.rules}
+        candidate_rules = []
+        for r in output.candidate_rules:
+            rid = _rule_id(agent_spec.name, r.text)
+            if rid not in existing_rule_ids:
+                candidate_rules.append(Rule(id=rid, text=r.text, severity=r.severity))
         return StressProfile(
             agent_spec_name=agent_spec.name,
             personas=[
@@ -95,10 +115,7 @@ class AgentProfiler:
                 )
                 for p in output.personas
             ],
-            candidate_rules=[
-                Rule(id=_rule_id(agent_spec.name, i), text=r.text, severity=r.severity)
-                for i, r in enumerate(output.candidate_rules)
-            ],
+            candidate_rules=candidate_rules,
         )
 
     @staticmethod

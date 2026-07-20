@@ -174,6 +174,9 @@ class Store(ABC):
     def list_runs(self, limit: int = 20) -> list[Run]: ...
 
     @abstractmethod
+    def list_runs_for_agent(self, agent_spec_name: str, limit: int = 50) -> list[Run]: ...
+
+    @abstractmethod
     def save_node(self, node: Node) -> None: ...
 
     @abstractmethod

@@ -19,8 +19,14 @@
 {{ severity_tag(entry.severity, indent='          ') }}
         </td>
         <td class="px-4 py-3 text-right font-mono text-[var(--ink-dim)]">{{ entry.cluster.member_node_ids | length }}</td>
-        <td class="px-4 py-3 font-mono text-xs text-[var(--ink-faint)]">
-          {{ entry.cluster.representative_node_id or "—" }}
+        <td class="px-4 py-3 font-mono text-xs">
+          {% if entry.cluster.representative_node_id %}
+          <a href="#node-{{ entry.cluster.representative_node_id }}" class="text-[var(--accent)] hover:underline">
+            {{ entry.cluster.representative_node_id }} &darr;
+          </a>
+          {% else %}
+          <span class="text-[var(--ink-faint)]">—</span>
+          {% endif %}
         </td>
         {% if run_id %}
         <td class="px-4 py-3 text-right whitespace-nowrap">

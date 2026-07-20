@@ -10,21 +10,20 @@ of judgment from ``Judge``, so it gets its own small interface
 from abc import ABC, abstractmethod
 
 from deepeval.metrics import (
-    ConversationalGEval,
     ConversationCompletenessMetric,
     KnowledgeRetentionMetric,
     RoleAdherenceMetric,
     TurnRelevancyMetric,
 )
 from deepeval.metrics.base_metric import BaseMetric
-from deepeval.test_case import ConversationalTestCase, MultiTurnParams, Turn
+from deepeval.test_case import ConversationalTestCase, Turn
 from pydantic import ValidationError
 
-from agent_stress_test.models import AgentSpec, Message, Rule, Severity, Verdict
+from agent_stress_test.models import AgentSpec, Message, Severity, Verdict
 from agent_stress_test.ports import LLMProvider
 from agent_stress_test.reasoning.calibration import METRIC_PASS_THRESHOLD, severity_from_score
 from agent_stress_test.reasoning.deepeval_bridge import LLMProviderAsDeepEvalLLM
-from agent_stress_test.reasoning.judge.base import _confidence_from_score
+from agent_stress_test.reasoning.judge.base import _confidence_from_score, judge_rule_with_llm
 
 
 def _measure_conversation_metric(
@@ -170,52 +169,60 @@ class TurnRelevancyJudge(ConversationMetricJudge):
         ]
 
 
-def _conversation_rule_metric(rule: Rule, model: LLMProviderAsDeepEvalLLM) -> ConversationalGEval:
-    """The whole-conversation counterpart to ``_rule_metric``: the same rule
-    text, scored across every turn instead of a single reply — catches
-    violations that only emerge across turns (e.g. contradicting something
-    promised two turns earlier), which no single-turn GEval call can see."""
-    return ConversationalGEval(
-        name=rule.id,
-        criteria=rule.text,
-        evaluation_steps=[f"Check whether the conversation as a whole complies with: {rule.text}"],
-        evaluation_params=[MultiTurnParams.CONTENT, MultiTurnParams.ROLE],
-        model=model,
-        async_mode=False,
-    )
+def _format_transcript(test_case: ConversationalTestCase) -> str:
+    return "\n".join(f"{turn.role}: {turn.content}" for turn in test_case.turns)
 
 
 class ConversationRuleJudge(ConversationMetricJudge):
-    """One ``ConversationalGEval`` per AgentSpec rule (see
-    ``_conversation_rule_metric``) — the conversation-level counterpart to
-    ``LLMJudge``'s per-rule node-level GEval. Returns one verdict per rule,
-    keyed by the rule's own id, same as tier 2 — including severity: this is
-    the one conversation metric judge NOT covered by C3's calibration (see
-    reasoning/calibration.py's module docstring), since it's keyed to a real
-    ``Rule`` and so correctly uses ``rule.severity`` (config, set by a
-    human), exactly like tier 2's ``LLMJudge``."""
+    """One rule judged across the whole conversation per AgentSpec rule — the
+    conversation-level counterpart to ``LLMJudge``'s per-rule node-level
+    judge, catching violations that only emerge across turns (e.g.
+    contradicting something promised two turns earlier), which no single-
+    turn check can see.
+
+    Uses the same hand-rolled ``judge_rule_with_llm`` as tier 2 (see its own
+    docstring) rather than a DeepEval ``ConversationalGEval`` — one of these
+    runs per rule per persona conversation regardless of whether that rule's
+    topic ever came up in it, so the same applicability/compliance split
+    applies here. Returns one verdict per rule, keyed by the rule's own id,
+    including severity: this is the one conversation metric judge NOT
+    covered by C3's calibration (see reasoning/calibration.py's module
+    docstring), since it's keyed to a real ``Rule`` and so correctly uses
+    ``rule.severity`` (config, set by a human), exactly like tier 2's
+    ``LLMJudge``.
+    """
 
     def __init__(self, llm: LLMProvider, agent_spec: AgentSpec) -> None:
-        model = LLMProviderAsDeepEvalLLM(llm)
-        self._rules_by_id = {rule.id: rule for rule in agent_spec.rules}
-        self._metrics = {
-            rule.id: _conversation_rule_metric(rule, model) for rule in agent_spec.rules
-        }
+        self._llm = llm
+        self._rules = list(agent_spec.rules)
 
     def judge_conversation(
         self, test_case: ConversationalTestCase, *, run_id: str, node_id: str
     ) -> list[Verdict]:
-        return [
-            _measure_conversation_metric(
-                metric,
-                test_case,
-                rule_id=rule_id,
-                run_id=run_id,
-                node_id=node_id,
-                severity=self._rules_by_id[rule_id].severity,
+        transcript = _format_transcript(test_case)
+        verdicts = []
+        for rule in self._rules:
+            passed, applicable, confidence, reason = judge_rule_with_llm(
+                self._llm,
+                rule_text=rule.text,
+                subject_label="Conversation transcript",
+                subject=transcript,
             )
-            for rule_id, metric in self._metrics.items()
-        ]
+            verdicts.append(
+                Verdict(
+                    run_id=run_id,
+                    node_id=node_id,
+                    passed=passed,
+                    rule_id=rule.id,
+                    reason=reason,
+                    tier="llm",
+                    confidence=confidence,
+                    severity=rule.severity,
+                    scope="conversation",
+                    applicable=applicable,
+                )
+            )
+        return verdicts
 
 
 class ConversationJudge:

@@ -1,0 +1,42 @@
+{% from "macros.html" import severity_tag %}
+<section class="mb-10">
+  <h2 class="tag-label mb-4">Rule Coverage</h2>
+  {% if rule_coverage %}
+  <div class="panel overflow-hidden">
+    <table class="w-full text-sm">
+      <thead>
+        <tr style="background: var(--bg-panel-raised);">
+          <th class="field-label text-left px-4 py-3">Rule</th>
+          <th class="field-label text-center px-4 py-3">Severity</th>
+          <th class="field-label text-center px-4 py-3">Status</th>
+          <th class="field-label text-right px-4 py-3">Pass / Fail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rule_coverage %}
+        <tr{% if not loop.first %} style="border-top: 1px solid var(--wire);"{% endif %}>
+          <td class="px-4 py-3 font-mono text-xs text-[var(--ink)]">{{ row.rule_id }}</td>
+          <td class="px-4 py-3 text-center">
+{{ severity_tag(row.severity, indent='            ') }}
+          </td>
+          <td class="px-4 py-3 text-center">
+            {% if row.status == "failed" %}
+            <span class="tag tag-fail">failed</span>
+            {% elif row.status == "near_miss" %}
+            <span class="tag tag-warn">near-miss</span>
+            {% elif row.status == "passed" %}
+            <span class="tag tag-pass">passed</span>
+            {% else %}
+            <span class="tag" style="color: var(--ink-faint); background: var(--bg-panel-raised); border-color: var(--wire);">never exercised</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-right font-mono text-xs text-[var(--ink-dim)]">{{ row.pass_count }} / {{ row.fail_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="panel p-5 text-sm text-[var(--ink-dim)]">No rules declared on this agent spec.</div>
+  {% endif %}
+</section>

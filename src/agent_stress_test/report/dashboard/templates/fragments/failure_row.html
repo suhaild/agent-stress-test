@@ -1,5 +1,8 @@
 {%- from "macros.html" import severity_tag, severity_color -%}
+{%- set search_text = ((node.tactic or '') ~ ' ' ~ verdict.severity ~ ' ' ~ (verdict.rule_id or '') ~ ' ' ~ verdict.reason) | lower -%}
 <div class="log-line rounded-sm px-4 py-3"
+     data-search="{{ search_text }}"
+     x-show="query === '' || query === undefined || $el.dataset.search.includes(query.toLowerCase())"
      style="background: var(--bg-panel); border: 1px solid var(--wire); border-left: 3px solid
        {{ severity_color(verdict.severity) }};">
   <div class="flex items-center justify-between gap-3 mb-1.5">

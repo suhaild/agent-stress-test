@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Example subprocess target for config/agents/example_subprocess_target.yaml.
+"""Example subprocess target for config/agents/examples/example_subprocess_target.yaml.
 
 Reads one JSON object ``{"messages": [...]}`` from stdin, writes one JSON
 object ``{"reply": "..."}`` to stdout — the wire shape ``SubprocessAgent``

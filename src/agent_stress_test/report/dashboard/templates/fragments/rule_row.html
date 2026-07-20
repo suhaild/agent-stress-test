@@ -1,20 +1,47 @@
+{%- from "macros.html" import severity_tag -%}
 {%- set rule_id = rule.id if rule is defined and rule else '' -%}
 {%- set text = rule.text if rule is defined and rule else '' -%}
 {%- set severity = rule.severity if rule is defined and rule else 'major' -%}
-<div class="rule-row panel p-4 space-y-2" style="position: relative;">
-  <button type="button" class="btn-ghost text-xs" style="position: absolute; top: .6rem; right: .6rem;"
-          @click="$el.closest('.rule-row').remove()">Remove</button>
-  <input type="hidden" name="rule_id" value="{{ rule_id }}">
-  <div>
-    <label class="field-label block mb-1">Rule Text</label>
-    <textarea name="rule_text" rows="2" class="field-input text-xs">{{ text }}</textarea>
+{%- set is_new = not (rule is defined and rule) -%}
+<details class="profile-card panel" {% if is_new %}open{% endif %}>
+  <summary>
+    <span class="disclosure-chevron">▸</span>
+    {{ severity_tag(severity, indent='') }}
+    <span class="profile-card-snippet">{{ text or "(empty rule)" }}</span>
+    {% if rule_id %}<span class="profile-card-id">{{ rule_id }}</span>{% endif %}
+  </summary>
+  <div class="profile-card-body">
+    <div class="flex justify-end gap-2">
+      <button type="button" class="btn-ghost text-xs" data-dirty
+              @click="pushToast('Rule removed — not permanent until you Save.', 'warn'); $el.closest('.profile-card').remove()">
+        Remove
+      </button>
+      {% if rule_id %}
+      <button type="button" class="btn-ghost text-xs" style="border-color: var(--pass); color: var(--pass);"
+              hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/candidate-rules/apply"
+              hx-include="closest .profile-card"
+              hx-target="closest .profile-card"
+              hx-swap="outerHTML"
+              hx-confirm="Write this rule into {{ agent_spec_name }}'s actual rules? It becomes a real, enforced rule the judge checks on every future run — this uses whatever text/severity is currently in the fields below, saved or not.">
+        Apply to Agent Rules
+      </button>
+      {% endif %}
+    </div>
+    <input type="hidden" name="rule_id" value="{{ rule_id }}">
+    <div>
+      <label class="field-label block mb-1">Rule Text</label>
+      <textarea name="rule_text" rows="3" class="field-input text-xs">{{ text }}</textarea>
+    </div>
+    <div style="max-width: 12rem;">
+      <label class="field-label block mb-1">Severity</label>
+      <select name="rule_severity" class="field-input text-xs">
+        <option value="critical" {% if severity == "critical" %}selected{% endif %}>critical</option>
+        <option value="major" {% if severity == "major" %}selected{% endif %}>major</option>
+        <option value="minor" {% if severity == "minor" %}selected{% endif %}>minor</option>
+      </select>
+    </div>
+    {% if rule_id %}
+    <p class="field-help">Rule ID <span class="font-mono">{{ rule_id }}</span> — this is the id "Apply to Agent Rules" above writes into the YAML; stays fixed while you edit the text/severity.</p>
+    {% endif %}
   </div>
-  <div style="max-width: 12rem;">
-    <label class="field-label block mb-1">Severity</label>
-    <select name="rule_severity" class="field-input text-xs">
-      <option value="critical" {% if severity == "critical" %}selected{% endif %}>critical</option>
-      <option value="major" {% if severity == "major" %}selected{% endif %}>major</option>
-      <option value="minor" {% if severity == "minor" %}selected{% endif %}>minor</option>
-    </select>
-  </div>
-</div>
+</details>

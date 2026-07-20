@@ -1,0 +1,12 @@
+<div class="profile-card panel p-4" style="border-left: 3px solid var(--pass);">
+  <div class="flex items-center gap-2 mb-1.5">
+    <span class="tag tag-pass">applied</span>
+    <span class="font-mono text-[.65rem] text-[var(--ink-faint)]">{{ rule.id }}</span>
+  </div>
+  <p class="text-sm text-[var(--ink)]">{{ rule.text }}</p>
+  <p class="field-help mt-1">Now a real rule on this agent's spec — the judge will check for it on future runs.</p>
+</div>
+{% if remaining_count is not none %}
+<span id="candidate-rules-count" hx-swap-oob="true" class="text-[var(--ink-faint)] normal-case">({{ remaining_count }} — proposed, never auto-applied)</span>
+<div id="candidate-rules-stat-value" hx-swap-oob="true" class="profile-stat-value" style="color: var(--warn);">{{ remaining_count }}</div>
+{% endif %}

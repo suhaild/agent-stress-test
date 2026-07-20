@@ -23,7 +23,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def sample_agent_spec_path() -> Path:
-    return REPO_ROOT / "config" / "agents" / "sample_support.yaml"
+    """A frozen copy of the sample spec, deliberately NOT the live one under
+    ``config/agents/`` -- that file is also the dashboard's real, editable
+    bundled agent, so applying a candidate rule to it through the running
+    app permanently changes its rule count/content. Tests need a spec that
+    never drifts out from under them regardless of what's been applied to
+    the live one; ``config/agents/sample_support_advanced.yaml`` stays free
+    for real use."""
+    return REPO_ROOT / "tests" / "fixtures" / "agents" / "sample_support_advanced.yaml"
 
 
 @pytest.fixture

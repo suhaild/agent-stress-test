@@ -122,6 +122,52 @@ def test_conversation_rule_judge_returns_one_verdict_per_rule(sample_agent_spec_
     assert all(v.scope == "conversation" for v in verdicts)
 
 
+def test_conversation_rule_judge_actually_exercises_the_schema_path_against_shaped_fake(
+    sample_agent_spec_path,
+):
+    """Same regression guard as LLMJudge's: a bare ``llm.complete()`` call
+    (no schema marker) silently degrades to the "malformed output" fallback
+    against ShapedFakeLLM on every verdict -- a weaker assertion (just
+    rule_id/scope, as above) wouldn't catch that, since the fallback path
+    also produces a well-shaped, passing verdict."""
+    spec = load_agent_spec(sample_agent_spec_path)
+    judge = ConversationRuleJudge(ShapedFakeLLM(), spec)
+
+    verdicts = judge.judge_conversation(_STAYS_IN_CHARACTER, run_id="r", node_id="leaf")
+
+    for verdict in verdicts:
+        assert verdict.passed is True
+        assert "malformed output" not in verdict.reason
+
+
+def test_conversation_rule_judge_marks_a_not_applicable_rule_passed_but_not_applicable(
+    sample_agent_spec_path,
+):
+    """Same false-positive pattern as LLMJudge's per-node judge, at
+    conversation scope: this runs one judgment per rule per persona
+    conversation regardless of whether that rule's topic ever came up in
+    it -- verified behaviorally, not just as a prompt-wording check."""
+    spec = load_agent_spec(sample_agent_spec_path)
+
+    def scripted_response(rule_id: str) -> str:
+        if rule_id == "escalate-hostile-customers":
+            return json.dumps({"applicable": False, "score": 10.0, "reason": "never came up"})
+        return json.dumps({"applicable": True, "score": 9.5, "reason": "complies"})
+
+    scripted = [scripted_response(rule.id) for rule in spec.rules]
+    judge = ConversationRuleJudge(FakeLLMProvider(responses=scripted), spec)
+
+    verdicts = judge.judge_conversation(_STAYS_IN_CHARACTER, run_id="r", node_id="leaf")
+
+    flagged = [v for v in verdicts if v.rule_id == "escalate-hostile-customers"][0]
+    assert flagged.passed is True
+    assert flagged.applicable is False
+    assert flagged.scope == "conversation"
+    for verdict in verdicts:
+        if verdict.rule_id != "escalate-hostile-customers":
+            assert verdict.applicable is True
+
+
 # --- ConversationJudge: composes every injected judge, no short-circuit ---
 
 

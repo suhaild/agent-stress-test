@@ -17,11 +17,18 @@ from typing import Any, Iterator
 
 from fastapi.templating import Jinja2Templates
 
-from agent_stress_test.composition import load_bundle
+from agent_stress_test.composition import CrossRunBundle, load_bundle, load_cross_run_bundle
 from agent_stress_test.models import Run, Verdict
 from agent_stress_test.orchestration.reliability import near_miss_ranking, score_run
+from agent_stress_test.orchestration.rule_coverage import rule_coverage
 from agent_stress_test.orchestration.tree import ConversationTree
-from agent_stress_test.report.shared import conversation_verdicts_by_leaf, ranked_clusters
+from agent_stress_test.orchestration.tree_viz import build_tree_viz
+from agent_stress_test.report.shared import (
+    conversation_verdicts_by_leaf,
+    executive_summary_context,
+    ranked_clusters,
+    trend_chart_points,
+)
 from agent_stress_test.store.sqlite_store import SqliteStore
 
 # Registered by the request thread the instant a run starts, before the
@@ -32,6 +39,23 @@ from agent_stress_test.store.sqlite_store import SqliteStore
 # access with its own lock (see tree.py) so that read/write race is safe.
 live_trees: dict[str, ConversationTree] = {}
 live_trees_lock = threading.Lock()
+
+# Which failures have already been pushed to the client, keyed by run id and
+# kept for the run's lifetime -- NOT scoped to one SSE connection. The failure
+# feed appends via "beforeend" (see run.html), so if this were per-connection,
+# a dropped/auto-reconnected EventSource (network blip, idle proxy timeout --
+# htmx's SSE extension retries by default) would start a fresh empty `seen`
+# set and replay every already-shown failure as a second, visually duplicate
+# card. Sharing this set across reconnects for the same run_id makes a
+# reconnect resume instead of replaying the backlog. Popped once the run goes
+# terminal (see stream_run_events) so it doesn't leak across runs.
+_seen_failures_lock = threading.Lock()
+_seen_failures_by_run: dict[str, set[str]] = {}
+
+
+def _seen_failures_for(run_id: str) -> set[str]:
+    with _seen_failures_lock:
+        return _seen_failures_by_run.setdefault(run_id, set())
 
 
 def locked_cluster_ids(store: SqliteStore, agent_spec_name: str) -> set[str]:
@@ -63,6 +87,8 @@ class _EventTick:
     ranked_clusters: list[dict] = field(default_factory=list)
     run_provider: str = ""
     locked_cluster_ids: set[str] = field(default_factory=set)
+    final_run: Run | None = None
+    cross_run: CrossRunBundle | None = None
 
 
 @dataclass
@@ -102,19 +128,25 @@ def _build_event_tick(run_id: str, db_path: str) -> _EventTick:
         with SqliteStore(db_path) as store:
             final_run, final_tree, final_verdicts, final_clusters = load_bundle(store, run_id)
             locked = locked_cluster_ids(store, final_run.agent_spec.name)
+            cross_run = load_cross_run_bundle(store, final_run, final_clusters, final_verdicts)
         tick.final_tree = final_tree
         tick.final_verdicts = final_verdicts
         tick.ranked_clusters = ranked_clusters(final_clusters, final_verdicts)
         tick.run_provider = final_run.provider
         tick.locked_cluster_ids = locked
+        tick.final_run = final_run
+        tick.cross_run = cross_run
     return tick
 
 
 def _make_live_panels(run_id: str) -> list[_LivePanel]:
     """Build this run's panel registry. Bound to closures over a few
-    per-connection trackers (``seen``/``last_node_count``/``last_status``) so
-    each SSE connection gets its own bookkeeping."""
-    seen: set[str] = set()
+    trackers. ``last_node_count``/``last_status`` are per-connection (safe to
+    replay on reconnect -- both panels swap via innerHTML, so re-sending the
+    same state just re-renders it, not duplicates it). ``seen`` is shared
+    across reconnects for this run id (see ``_seen_failures_for``) since the
+    failure panel appends instead of replacing."""
+    seen = _seen_failures_for(run_id)
     last_node_count = 0
     last_status: str | None = None
 
@@ -192,6 +224,30 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
             "conversation_groups": conversation_verdicts_by_leaf(tick.final_verdicts),
         }
 
+    def cross_run_context(tick: _EventTick) -> dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "cross_run": tick.cross_run,
+            "trend_points": trend_chart_points(tick.cross_run.trend) if tick.cross_run else [],
+        }
+
+    def rule_coverage_context(tick: _EventTick) -> dict[str, Any]:
+        return {
+            "rule_coverage": rule_coverage(tick.final_run.agent_spec.rules, tick.final_verdicts),
+        }
+
+    def tree_viz_context(tick: _EventTick) -> dict[str, Any]:
+        return {"tree_viz": build_tree_viz(tick.final_tree, tick.final_verdicts)}
+
+    def summary_context(tick: _EventTick) -> dict[str, Any]:
+        return executive_summary_context(
+            tick.final_tree.nodes(),
+            tick.final_verdicts,
+            [entry["cluster"] for entry in tick.ranked_clusters],
+            score_run(tick.final_tree.nodes(), tick.final_verdicts),
+            near_miss_ranking(tick.final_tree.nodes(), tick.final_verdicts),
+        )
+
     return [
         _LivePanel(
             "reliability", "fragments/reliability_gauge.html",
@@ -231,6 +287,38 @@ def _make_live_panels(run_id: str) -> list[_LivePanel]:
             "conversation-verdicts", "fragments/conversation_verdicts_section.html",
             terminal_cadence, conversation_verdicts_context,
         ),
+        # Phase RE1: also terminal-only — "vs. previous run" and the pass-rate
+        # history only mean something once this run's own clusters exist.
+        _LivePanel(
+            "cross-run",
+            "fragments/cross_run_section.html",
+            terminal_cadence,
+            cross_run_context,
+        ),
+        # Phase RE2: terminal-only too, same reason as clusters/near-misses
+        # above — "fix this first" ranks confirmed clusters alongside
+        # near-misses, both of which only exist once the run is done.
+        _LivePanel(
+            "summary",
+            "fragments/summary_panel.html",
+            terminal_cadence,
+            summary_context,
+        ),
+        # Phase RE3: terminal-only for the same reason as everything else in
+        # this block — a live tree/rule-coverage view would just churn on
+        # every node (explicitly out of scope for the RE3 timebox).
+        _LivePanel(
+            "rule-coverage",
+            "fragments/rule_coverage_section.html",
+            terminal_cadence,
+            rule_coverage_context,
+        ),
+        _LivePanel(
+            "tree-viz",
+            "fragments/tree_viz_section.html",
+            terminal_cadence,
+            tree_viz_context,
+        ),
     ]
 
 
@@ -250,5 +338,6 @@ def stream_run_events(run_id: str, db_path: str, templates: Jinja2Templates) -> 
                     html = panel.decorate(html)
                 yield _sse(panel.event, html)
         if tick.is_terminal:
+            _seen_failures_by_run.pop(run_id, None)
             return
         time.sleep(0.3)

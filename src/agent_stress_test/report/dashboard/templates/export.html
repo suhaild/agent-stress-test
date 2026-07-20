@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ run.agent_spec.display_name or run.agent_spec.name }} — {{ run.id[:8] }} — Stress-Test Export</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  {% include "_styles.html" %}
+</head>
+<body class="min-h-screen antialiased">
+  <header class="px-6 md:px-10 py-6 flex items-center justify-between no-print">
+    <span class="brand-mark text-2xl md:text-3xl">Agent Stress-Test</span>
+    <button type="button" onclick="window.print()" class="btn-stamp">
+      Print / Save as PDF
+    </button>
+  </header>
+  <div class="hazard-bar no-print"></div>
+
+  <main class="max-w-5xl mx-auto px-6 md:px-10 py-10">
+    <p class="print-only tag-label mb-4">Agent Stress-Test — Static Export</p>
+
+    <div class="mb-8">
+      <h1 class="brand-mark text-2xl md:text-3xl">{{ run.agent_spec.display_name or run.agent_spec.name }}</h1>
+      <p class="font-mono text-xs text-[var(--ink-faint)] mt-1.5">
+        {{ run.id }} <span class="text-[var(--wire)]">&middot;</span> {{ run.provider }}
+        <span class="text-[var(--wire)]">&middot;</span> exported {{ exported_at }}
+      </p>
+    </div>
+
+    <div class="mb-10">
+      {% include "fragments/summary_panel.html" %}
+    </div>
+
+    <section class="mb-10">
+      <h2 class="tag-label mb-4">Reliability</h2>
+      {% include "fragments/reliability_gauge.html" %}
+    </section>
+
+    <section class="mb-10">
+      <h2 class="tag-label mb-4">Failure Clusters</h2>
+      {% include "fragments/cluster_table.html" %}
+    </section>
+
+    <div class="mb-10">
+      {% include "fragments/rule_coverage_section.html" %}
+    </div>
+
+    <div class="mb-10">
+      {% include "fragments/conversation_verdicts_section.html" %}
+    </div>
+
+    <section class="mb-10">
+      <h2 class="tag-label mb-4">Near Misses</h2>
+      {% include "fragments/near_miss_panel.html" %}
+    </section>
+
+    <div class="mb-10">
+      {% include "fragments/tree_viz_section.html" %}
+    </div>
+
+    <div class="mb-10">
+      {% include "fragments/transcripts_section.html" %}
+    </div>
+
+    <section>
+      <h2 class="tag-label mb-4">All Failures</h2>
+      <div class="space-y-3">
+        {% for verdict in failures %}
+          {% set node = tree.get(verdict.node_id) %}
+          {% include "fragments/failure_row.html" %}
+        {% endfor %}
+        {% if not failures %}
+        <p class="text-sm text-[var(--ink-dim)]">No failures on this run.</p>
+        {% endif %}
+      </div>
+    </section>
+  </main>
+</body>
+</html>

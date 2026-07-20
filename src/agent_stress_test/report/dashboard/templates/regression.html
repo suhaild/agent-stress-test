@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "macros.html" import model_picker %}
 {% block title %}Regression Corpus — {{ agent_spec_name }}{% endblock %}
 {% block content %}
 <div class="mb-8 reveal">
@@ -8,20 +9,41 @@
 
 <section class="mb-8 reveal" style="animation-delay: 60ms">
   <form hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/regression/run"
-        hx-target="#regression-table" hx-swap="innerHTML"
-        class="panel p-6 flex flex-wrap items-end gap-4">
+        hx-target="#regression-table" hx-swap="innerHTML" hx-disabled-elt="#regression-submit-btn"
+        id="regression-form" class="panel p-6 flex flex-wrap items-end gap-4">
     <div class="flex-1 min-w-[14rem]">
       <label class="field-label block mb-1">Target Provider</label>
       <p class="field-help mb-1.5">The model (or "fake") behind whichever agent you want to re-check.</p>
-      <input type="text" name="provider" value="fake" class="field-input font-mono">
+      {{ model_picker('provider', models, 'fake', models[0].label if models else 'fake') }}
     </div>
     <div class="flex-1 min-w-[14rem]">
       <label class="field-label block mb-1">Target Endpoint (optional)</label>
       <p class="field-help mb-1.5">Your own HTTP endpoint — blank uses the bundled demo agent.</p>
       <input type="text" name="target_url" placeholder="e.g. http://localhost:5000/chat" class="field-input font-mono">
     </div>
-    <button type="submit" class="btn-stamp">Run Regression Gate →</button>
+    <button type="submit" id="regression-submit-btn" class="btn-stamp">Run Regression Gate →</button>
+    <p id="regression-fake-provider-warning" class="field-help w-full" style="color: var(--warn);">
+      <strong>!</strong> Offline test double selected — free, but some verdict reasons will read as
+      generic placeholder text rather than real judgments. Switch Target Provider to a real model
+      before a live demo.
+    </p>
   </form>
+  <script>
+    (function () {
+      var form = document.getElementById('regression-form');
+      var warning = document.getElementById('regression-fake-provider-warning');
+      if (!form || !warning) return;
+      function update() {
+        var input = form.querySelector('[name=provider]');
+        var isFake = !input || !input.value || input.value === 'fake';
+        warning.style.display = isFake ? '' : 'none';
+      }
+      form.addEventListener('click', function () { setTimeout(update, 0); });
+      form.addEventListener('input', update);
+      form.addEventListener('change', update);
+      setTimeout(update, 0);
+    })();
+  </script>
 </section>
 
 <section class="mb-10 reveal" style="animation-delay: 120ms">

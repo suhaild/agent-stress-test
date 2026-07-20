@@ -5,7 +5,7 @@
 
   <div class="flex flex-wrap items-start justify-between gap-4 mb-8 reveal">
     <div>
-      <h1 class="brand-mark text-2xl md:text-3xl">{{ run.agent_spec.name }}</h1>
+      <h1 class="brand-mark text-2xl md:text-3xl">{{ run.agent_spec.display_name or run.agent_spec.name }}</h1>
       <p class="font-mono text-xs text-[var(--ink-faint)] mt-1.5">{{ run.id }} <span class="text-[var(--wire)]">·</span> {{ run.provider }}</p>
       <a href="/agent-specs/{{ run.agent_spec.name | urlencode }}/regression"
          class="font-mono text-xs text-[var(--accent)] hover:underline mt-1 inline-block">
@@ -15,10 +15,49 @@
          class="font-mono text-xs text-[var(--accent)] hover:underline mt-1 ml-3 inline-block">
         View stress profile →
       </a>
+      <a href="/runs/{{ run.id }}/export.html" target="_blank" rel="noopener"
+         class="export-link font-mono text-xs text-[var(--accent)] hover:underline mt-1 ml-3 inline-block"
+         title="Available once the run finishes">
+        Export HTML / PDF →
+      </a>
+      <a href="/runs/{{ run.id }}/export.md"
+         class="export-link font-mono text-xs text-[var(--accent)] hover:underline mt-1 ml-3 inline-block"
+         title="Available once the run finishes">
+        Export Markdown →
+      </a>
+      <a href="/runs/{{ run.id }}/export.json"
+         class="export-link font-mono text-xs text-[var(--accent)] hover:underline mt-1 ml-3 inline-block"
+         title="Available once the run finishes">
+        Export JSON →
+      </a>
     </div>
     <div id="status-badge" sse-swap="status" hx-swap="innerHTML">
       {% include "fragments/status_badge.html" %}
     </div>
+  </div>
+  <script>
+    // The export links above read straight from the store (see server.py's
+    // _require_terminal_run), which 409s until the run is completed/failed
+    // -- this just keeps the UI from inviting a click that's guaranteed to
+    // error, by mirroring the status badge's own data-status attribute
+    // (re-checked after every SSE swap, since "status" pushes fresh markup
+    // in via innerHTML, not a page reload).
+    (function () {
+      function updateExportLinks() {
+        var badge = document.querySelector('[data-status]');
+        var status = badge ? badge.getAttribute('data-status') : null;
+        var ready = status === 'completed' || status === 'failed';
+        document.querySelectorAll('.export-link').forEach(function (a) {
+          a.classList.toggle('is-disabled', !ready);
+        });
+      }
+      document.body.addEventListener('htmx:afterSettle', updateExportLinks);
+      updateExportLinks();
+    })();
+  </script>
+
+  <div id="summary-section" sse-swap="summary" hx-swap="innerHTML">
+    {% include "fragments/summary_panel.html" %}
   </div>
 
   <section class="mb-10 reveal" style="animation-delay: 60ms">
@@ -35,6 +74,14 @@
     </div>
   </section>
 
+  <div id="rule-coverage-section" sse-swap="rule-coverage" hx-swap="innerHTML">
+    {% include "fragments/rule_coverage_section.html" %}
+  </div>
+
+  <div id="cross-run-section" sse-swap="cross-run" hx-swap="innerHTML">
+    {% include "fragments/cross_run_section.html" %}
+  </div>
+
   <div id="suggestion-panel" class="mb-10"></div>
 
   <div id="conversation-verdicts-section" sse-swap="conversation-verdicts" hx-swap="innerHTML">
@@ -48,6 +95,10 @@
     </div>
   </section>
 
+  <div id="tree-viz-section" sse-swap="tree-viz" hx-swap="innerHTML">
+    {% include "fragments/tree_viz_section.html" %}
+  </div>
+
   <div id="transcripts-section" sse-swap="transcripts" hx-swap="innerHTML">
     {% include "fragments/transcripts_section.html" %}
   </div>
@@ -55,7 +106,9 @@
   <section class="reveal" style="animation-delay: 180ms">
     <h2 class="tag-label mb-4">Live Failure Feed</h2>
     {% set feed_visible = 5 %}
-    <div id="failure-feed" sse-swap="failure" hx-swap="beforeend" class="space-y-3" x-data="{ expanded: false }">
+    <div id="failure-feed" sse-swap="failure" hx-swap="beforeend" class="space-y-3" x-data="{ expanded: false, query: '' }">
+      <input type="search" x-model="query" placeholder="Filter by tactic, rule, severity, or reason&hellip;"
+             class="field-input mb-3" style="max-width: 26rem;" aria-label="Filter the failure feed">
       {% if failures | length > feed_visible %}
       <div x-show="expanded" x-collapse class="space-y-3 mb-3">
         {% for verdict in failures[:-feed_visible] %}

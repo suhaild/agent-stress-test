@@ -1,3 +1,31 @@
+{% macro model_picker(field_name, options, default_value, default_label) %}
+<div x-data="dropdown({ value: '{{ default_value }}', label: '{{ default_label }}' })" @click.outside="open = false" class="relative">
+  <button type="button" @click="open = !open" class="field-input flex items-center justify-between text-left w-full">
+    <span x-text="label" class="truncate"></span>
+    <span class="text-[var(--ink-faint)] ml-2 transition-transform duration-150" :class="{ 'rotate-180': open }">▾</span>
+  </button>
+  <input type="hidden" name="{{ field_name }}" :value="value">
+  <div x-show="open" x-collapse x-cloak class="tactic-panel">
+    {% for opt in options %}
+    <label class="tactic-row" @click="value = '{{ opt.id }}'; label = '{{ opt.label }}'; open = false">
+      <input type="radio" :checked="value === '{{ opt.id }}'" class="mt-0.5 accent-[var(--accent)]">
+      <span class="min-w-0">
+        <span class="field-label block">{{ opt.label }}</span>
+        {% if opt.id %}<span class="field-help block mt-0.5 font-mono">{{ opt.id }}</span>{% endif %}
+      </span>
+    </label>
+    {% endfor %}
+    <label class="tactic-row" style="cursor: auto;">
+      <span class="min-w-0 w-full">
+        <span class="field-label block mb-1">Custom model id</span>
+        <input type="text" placeholder="provider/model-name" class="field-input font-mono text-xs"
+               @click.stop @input="value = $event.target.value; label = $event.target.value || 'Custom model id'">
+      </span>
+    </label>
+  </div>
+</div>
+{% endmacro %}
+
 {% macro severity_tag(severity, indent='    ') %}{{ indent }}<span class="tag {% if severity == 'critical' %}tag-fail{% elif severity == 'major' %}tag-warn{% else %}tag-pass{% endif %}">
 {{ indent }}  {{ severity }}
 {{ indent }}</span>{% endmacro %}
@@ -32,14 +60,27 @@
   {%- endfor %}
 </div>{% endif %}{% endmacro %}
 
+{% macro tier_badge(tier) %}<span class="tag" style="{% if tier == 'llm' %}color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); border-color: var(--accent);{% else %}color: var(--ink-dim); background: var(--bg-panel-raised); border-color: var(--wire);{% endif %}">{{ tier }}</span>{% endmacro %}
+
+{% macro confidence_bar(confidence, width=56) %}<svg width="{{ width }}" height="8" viewBox="0 0 {{ width }} 8" role="img" aria-label="confidence {{ '%.0f'|format(confidence * 100) }}%">
+  <rect x="0" y="0" width="{{ width }}" height="8" style="fill: var(--wire);"></rect>
+  <rect x="0" y="0" width="{{ width * confidence }}" height="8" style="fill: var(--accent);"></rect>
+</svg>{% endmacro %}
+
 {% macro instability_badge(node) %}{% if node.instability_score is not none %}<span class="font-mono text-[.65rem] ml-2" style="color: {% if node.instability_score >= 0.7 %}var(--fail){% elif node.instability_score >= 0.4 %}var(--warn){% else %}var(--ink-faint){% endif %};">[instability: {{ "%.0f"|format(node.instability_score * 100) }}%]</span>{% endif %}{% endmacro %}
 
 {% macro tool_verdict(node_verdicts) %}{% set tool_verdicts = node_verdicts | selectattr("scope", "equalto", "tool") | list %}{% if tool_verdicts %}{% set v = tool_verdicts[0] %}
     <div class="mt-1.5 rounded-sm px-2.5 py-1.5 font-mono text-[.68rem]" style="
         border: 1px solid {% if v.passed %}var(--pass){% else %}var(--fail){% endif %};
         background: {% if v.passed %}var(--pass-dim){% else %}var(--fail-dim){% endif %};">
-      <span class="font-semibold uppercase tracking-wide {% if v.passed %}text-[var(--pass)]{% else %}text-[var(--fail)]{% endif %}">{% if v.passed %}✓ arguments{% else %}✗ arguments{% endif %}</span>
-      <span class="text-[var(--ink-faint)]">· argument correctness · {{ "%.0f"|format(v.confidence * 100) }}%</span>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-semibold uppercase tracking-wide {% if v.passed %}text-[var(--pass)]{% else %}text-[var(--fail)]{% endif %}">{% if v.passed %}✓ arguments{% else %}✗ arguments{% endif %}</span>
+        <span class="text-[var(--ink-faint)]">· argument correctness</span>
+{{ tier_badge(v.tier) }}
+        <span class="flex items-center gap-1.5 text-[var(--ink-faint)] normal-case">{{ "%.0f"|format(v.confidence * 100) }}%
+{{ confidence_bar(v.confidence, width=40) }}
+        </span>
+      </div>
       <p class="mt-0.5 normal-case text-[var(--ink-dim)]">{{ v.reason }}</p>
     </div>
 {% endif %}{% endmacro %}
@@ -50,10 +91,13 @@
         border: 1px solid {{ severity_color(verdict.severity) }};
         background: {{ severity_color(verdict.severity, dim=True) }};">
       <p class="font-mono text-[.68rem] font-semibold uppercase tracking-wide mb-1">Verdict — {{ verdict.severity }}</p>
-      <p class="font-mono text-[.68rem] text-[var(--ink-dim)]">
-        rule: {{ verdict.rule_id or "—" }} · tier: {{ verdict.tier }}
-        · confidence: {{ "%.0f"|format(verdict.confidence * 100) }}%
-      </p>
+      <div class="flex flex-wrap items-center gap-2 font-mono text-[.68rem] text-[var(--ink-dim)]">
+        <span>rule: {{ verdict.rule_id or "—" }}</span>
+{{ tier_badge(verdict.tier) }}
+        <span class="flex items-center gap-1.5">{{ "%.0f"|format(verdict.confidence * 100) }}%
+{{ confidence_bar(verdict.confidence) }}
+        </span>
+      </div>
       <p class="text-sm mt-1 text-[var(--ink)]">{{ verdict.reason }}</p>
     </div>
   {% else %}

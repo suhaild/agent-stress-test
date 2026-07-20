@@ -11,7 +11,7 @@ random one, so a test can assert exactly what's wrong.
 
 Wired declaratively via
 ``target: {kind: python, import_path: "agent_stress_test.targets.tool_calling_verification_agent:tool_calling_verification_agent"}``
-(see ``config/agents/example_tool_calling_verification.yaml``).
+(see ``config/agents/examples/example_tool_calling_verification.yaml``).
 """
 
 import re

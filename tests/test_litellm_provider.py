@@ -12,7 +12,7 @@ from agent_stress_test.ports import (
     ProviderRateLimitError,
     ProviderTimeoutError,
 )
-from agent_stress_test.providers.litellm_provider import LiteLLMProvider
+from agent_stress_test.providers.litellm_provider import _DEFAULT_TIMEOUT_SECONDS, LiteLLMProvider
 
 
 def make_response(content: str) -> SimpleNamespace:
@@ -44,7 +44,26 @@ def test_complete_maps_messages_and_returns_content(mock_completion):
             {"role": "system", "content": "be nice"},
             {"role": "user", "content": "hello"},
         ],
+        timeout=_DEFAULT_TIMEOUT_SECONDS,
     )
+
+
+def test_complete_passes_a_default_timeout_so_an_unresponsive_endpoint_fails_fast(
+    mock_completion,
+):
+    LiteLLMProvider(model="claude-3-5-sonnet-20241022").complete(
+        [Message(role="user", content="hi")]
+    )
+
+    assert mock_completion.call_args.kwargs["timeout"] == _DEFAULT_TIMEOUT_SECONDS
+
+
+def test_an_explicit_timeout_kwarg_overrides_the_default(mock_completion):
+    LiteLLMProvider(model="claude-3-5-sonnet-20241022", timeout=5).complete(
+        [Message(role="user", content="hi")]
+    )
+
+    assert mock_completion.call_args.kwargs["timeout"] == 5
 
 
 def test_sample_n_calls_complete_n_times(mock_completion):
@@ -90,6 +109,7 @@ def test_cache_flagged_message_gets_cache_control(mock_completion):
             },
             {"role": "user", "content": "hello"},
         ],
+        timeout=_DEFAULT_TIMEOUT_SECONDS,
     )
 
 
@@ -135,6 +155,7 @@ def test_block_content_message_translates_to_litellm_content_blocks(mock_complet
                 ],
             },
         ],
+        timeout=_DEFAULT_TIMEOUT_SECONDS,
     )
 
 
@@ -168,6 +189,7 @@ def test_complete_with_tools_passes_tools_through_and_returns_text_when_no_tool_
         model="claude-3-5-sonnet-20241022",
         messages=[{"role": "user", "content": "hi"}],
         tools=tools,
+        timeout=_DEFAULT_TIMEOUT_SECONDS,
     )
 
 
