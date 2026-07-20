@@ -228,3 +228,36 @@ def test_cli_reports_the_migration_error_cleanly_not_a_raw_traceback(tmp_path, c
     assert exit_code == 1
     assert "migration script" in out
     assert "Traceback" not in out
+
+
+def test_cli_error_printing_disables_word_wrap(tmp_path, monkeypatch):
+    from rich.console import Console
+
+    from agent_stress_test.cli import main
+
+    db_path = tmp_path / "runs.sqlite"
+    with SqliteStore(str(db_path)):
+        pass
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO nodes (id, run_id, data) VALUES (?, ?, ?)",
+        ("broken-node", "run-1", json.dumps({"id": "broken-node", "run_id": "run-1"})),
+    )
+    conn.commit()
+    conn.close()
+
+    calls = []
+    original_print = Console.print
+
+    def recording_print(self, *args, **kwargs):
+        calls.append((args, kwargs))
+        return original_print(self, *args, **kwargs)
+
+    monkeypatch.setattr(Console, "print", recording_print)
+
+    exit_code = main(["run", "--db", str(db_path)])
+
+    assert exit_code == 1
+    error_calls = [(a, k) for a, k in calls if a and "Error:" in a[0]]
+    assert error_calls, "expected the CLI to print an error"
+    assert all(kwargs.get("soft_wrap") is True for _args, kwargs in error_calls)

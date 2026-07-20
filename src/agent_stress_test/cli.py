@@ -186,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         ensure_current_or_raise(args.db)
         return args.func(args, console)
     except (ValueError, ProviderError) as exc:
-        console.print(f"[bold red]Error:[/bold red] {exc}")
+        console.print(f"[bold red]Error:[/bold red] {exc}", soft_wrap=True)
         return 1
 
 
