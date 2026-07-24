@@ -17,10 +17,10 @@
       automatically, so it can be undone from the regression corpus page any time.
     </p>
     <form hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/system-prompt/apply"
-          hx-target="#suggestion-panel" hx-swap="innerHTML"
+          hx-target="#suggestion-panel" hx-swap="innerHTML" hx-disabled-elt="#apply-fix-btn"
           hx-confirm="Write this suggested system prompt to config/agents/{{ agent_spec_name }}'s YAML file now?">
       <input type="hidden" name="suggested_system_prompt" value="{{ suggestion.suggested_system_prompt }}">
-      <button type="submit" class="btn-stamp text-xs whitespace-nowrap">Apply Fix →</button>
+      <button type="submit" id="apply-fix-btn" class="btn-stamp text-xs whitespace-nowrap">Apply Fix →</button>
     </form>
   </div>
   {% else %}
@@ -30,4 +30,7 @@
   </p>
   {% endif %}
 </div>
+<script>
+  document.getElementById('suggestion-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+</script>
 {% endif %}

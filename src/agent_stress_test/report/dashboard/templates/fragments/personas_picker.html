@@ -14,6 +14,7 @@
               hx-vals='js:{provider: document.querySelector("[name=sim_provider]")?.value || "fake"}'
               hx-swap="none"
               hx-indicator="#profile-gen-status"
+              hx-disabled-elt="this"
               hx-confirm="{% if has_profile %}Regenerate this agent's stress profile? Its saved personas below will be replaced.{% else %}Generate a stress profile tailored to this agent's own domain?{% endif %}"
               class="btn-ghost text-[.65rem]">
         {% if has_profile %}Regenerate{% else %}Generate{% endif %} Profile
@@ -42,7 +43,7 @@
              :checked="selected.includes('{{ tactic.id }}')"
              @change="$event.target.checked ? selected.push('{{ tactic.id }}') : selected = selected.filter(t => t !== '{{ tactic.id }}')">
       <span class="min-w-0">
-        <span class="field-label block">{{ tactic.id.replace('-', ' ') | title }}</span>
+        <span class="field-label block">{{ tactic.id.replace('-', ' ').replace('_', ' ') | title }}</span>
         <span class="field-help block mt-0.5">{{ tactic.description }}</span>
       </span>
     </label>

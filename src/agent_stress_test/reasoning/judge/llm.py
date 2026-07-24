@@ -7,9 +7,6 @@ from agent_stress_test.ports import LLMProvider
 from agent_stress_test.reasoning.judge.base import Judge, judge_rule_with_llm
 from agent_stress_test.reasoning.judge.rules import RulesJudge, build_checks
 
-# required_disclaimer's tier-1 check is only a proximity/keyword trigger and
-# can fire before the topic is genuinely being discussed, so it alone gets a
-# second opinion from tier 2 rather than standing on its own.
 _TRIGGER_ONLY_CHECK_TYPES = {"required_disclaimer"}
 
 

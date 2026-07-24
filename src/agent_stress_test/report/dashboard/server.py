@@ -7,8 +7,8 @@ the live-run registry/SSE scheduler in ``live_events.py``, prompt diffing in
 
 from __future__ import annotations
 
+import logging
 import threading
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,6 +83,8 @@ from agent_stress_test.report.shared import (
 )
 from agent_stress_test.store.migrations import ensure_current_or_raise
 from agent_stress_test.store.sqlite_store import SqliteStore
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = "runs.sqlite"
 
@@ -270,12 +272,10 @@ def _execute_run(
             )
             cluster_and_persist(result, store)
     except Exception as exc:
-        traceback.print_exc()
+        logger.exception("run failed run_id=%s provider=%s", run_id, provider)
         with SqliteStore(db_path) as store:
-            for node in tree.nodes():
-                store.save_node(node)
-            for verdict in tree.all_verdicts():
-                store.save_verdict(verdict)
+            store.save_nodes(tree.nodes())
+            store.save_verdicts(tree.all_verdicts())
             existing = store.get_run(run_id)
             store.save_run(
                 Run(
@@ -316,6 +316,7 @@ def _require_terminal_run(store: SqliteStore, run_id: str) -> Run:
 def create_app(db_path: str = _DEFAULT_DB) -> FastAPI:
     """Build the dashboard app. ``db_path`` is fixed at process startup,
     never accepted from a client request."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     ensure_current_or_raise(db_path)
     with SqliteStore(db_path) as store:
         reconcile_interrupted_runs(store)

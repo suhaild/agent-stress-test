@@ -14,6 +14,7 @@
               hx-include="#rules-section"
               hx-target="#rules-section"
               hx-swap="outerHTML"
+              hx-disabled-elt="this"
               hx-confirm="Write all {{ rules | length }} remaining candidate rule{{ 's' if rules | length != 1 else '' }} into {{ agent_spec_name }}'s actual rules at once? Any that collide with an id already on the spec are skipped and reported, not blocked.">
         Apply All ({{ rules | length }})
       </button>

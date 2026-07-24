@@ -10,6 +10,7 @@
 <section class="mb-8 reveal" style="animation-delay: 60ms">
   <form hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/profile/generate"
         hx-target="#profile-editor" hx-swap="innerHTML"
+        hx-disabled-elt="#profile-generate-btn"
         hx-confirm="{% if profile %}Regenerate this agent's stress profile? Unsaved edits below will be replaced.{% else %}Generate a stress profile for this agent?{% endif %}"
         class="panel p-6 flex flex-wrap items-end gap-4">
     <div class="flex-1 min-w-[14rem]">
@@ -17,7 +18,7 @@
       <p class="field-help mb-1.5">The LLM that proposes personas + candidate rules for this agent.</p>
       {{ model_picker('provider', models, 'fake', models[0].label) }}
     </div>
-    <button type="submit" class="btn-stamp">{% if profile %}Regenerate{% else %}Generate{% endif %} Profile →</button>
+    <button type="submit" id="profile-generate-btn" class="btn-stamp">{% if profile %}Regenerate{% else %}Generate{% endif %} Profile →</button>
   </form>
 </section>
 

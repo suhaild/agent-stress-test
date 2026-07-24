@@ -91,6 +91,18 @@ class SqliteStore(Store):
         )
         self._conn.commit()
 
+    def _upsert_many(
+        self, table: str, columns: tuple[str, ...], rows: list[tuple[str, ...]]
+    ) -> None:
+        if not rows:
+            return
+        placeholders = ", ".join("?" for _ in columns)
+        self._conn.executemany(
+            f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",  # nosec B608
+            rows,
+        )
+        self._conn.commit()
+
     def _load_many(self, table: str, run_id: str) -> list[str]:
         # table is always a literal from this class's own call sites, never external input.
         rows = self._conn.execute(
@@ -127,6 +139,13 @@ class SqliteStore(Store):
     def save_node(self, node: Node) -> None:
         self._upsert("nodes", ("id", "run_id", "data"), (node.id, node.run_id, node.model_dump_json()))
 
+    def save_nodes(self, nodes: list[Node]) -> None:
+        self._upsert_many(
+            "nodes",
+            ("id", "run_id", "data"),
+            [(node.id, node.run_id, node.model_dump_json()) for node in nodes],
+        )
+
     def get_nodes(self, run_id: str) -> list[Node]:
         return [Node.model_validate_json(data) for data in self._load_many("nodes", run_id)]
 
@@ -137,6 +156,13 @@ class SqliteStore(Store):
             "verdicts",
             ("id", "run_id", "data"),
             (verdict.id, verdict.run_id, verdict.model_dump_json()),
+        )
+
+    def save_verdicts(self, verdicts: list[Verdict]) -> None:
+        self._upsert_many(
+            "verdicts",
+            ("id", "run_id", "data"),
+            [(verdict.id, verdict.run_id, verdict.model_dump_json()) for verdict in verdicts],
         )
 
     def get_verdicts(self, run_id: str) -> list[Verdict]:

@@ -23,7 +23,7 @@
   </p>
 
   <form id="profile-form" hx-post="/agent-specs/{{ agent_spec_name | urlencode }}/profile/save"
-        hx-target="#profile-editor" hx-swap="innerHTML">
+        hx-target="#profile-editor" hx-swap="innerHTML" hx-disabled-elt="#profile-save-btn">
 
     <section class="space-y-2 mb-8">
       <div class="flex items-center justify-between flex-wrap gap-2">
@@ -50,7 +50,7 @@
 
     <div class="profile-save-bar">
       <span id="profile-unsaved-badge" class="tag tag-warn" hidden>unsaved changes</span>
-      <button type="submit" class="btn-stamp">Save Profile Edits</button>
+      <button type="submit" id="profile-save-btn" class="btn-stamp">Save Profile Edits</button>
     </div>
   </form>
   <script>

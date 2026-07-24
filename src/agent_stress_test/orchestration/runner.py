@@ -5,6 +5,7 @@ drives one bounded ``Run`` end to end, then scores and (if a ``Store`` was
 injected) persists it through that port.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -25,6 +26,8 @@ from agent_stress_test.reasoning.judge import (
     build_two_tier_judge,
 )
 from agent_stress_test.reasoning.profiler import to_conversational_golden
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_SEED: list[Message] = [
     Message(role="user", content="Hi, I need help with my recent order.")
@@ -85,6 +88,11 @@ class Runner:
         )
         tree = tree if tree is not None else ConversationTree(run.id)
 
+        logger.info(
+            "run started run_id=%s agent=%s provider=%s budget=%d",
+            run.id, self._agent_spec.name, provider_name, budget,
+        )
+
         seed = seed_messages if seed_messages is not None else list(_DEFAULT_SEED)
         result = self._strategy.search(tree, seed, budget=budget)
 
@@ -97,6 +105,11 @@ class Runner:
         run.status = "completed"
         run.completed_at = datetime.now(timezone.utc)
 
+        logger.info(
+            "run completed run_id=%s score=%.3f nodes=%d failures=%d",
+            run.id, reliability.score, len(tree.nodes()), len(result.failures),
+        )
+
         if self._store is not None:
             self._persist(run, tree)
 
@@ -108,10 +121,8 @@ class Runner:
         # Nodes/verdicts must land before the run row flips to "completed" —
         # the dashboard's SSE loop treats that status as the signal the
         # tree is safe to reload.
-        for node in tree.nodes():
-            self._store.save_node(node)
-        for verdict in tree.all_verdicts():
-            self._store.save_verdict(verdict)
+        self._store.save_nodes(tree.nodes())
+        self._store.save_verdicts(tree.all_verdicts())
         self._store.save_run(run)
 
 
